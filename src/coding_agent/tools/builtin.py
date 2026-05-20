@@ -1,0 +1,152 @@
+"""Built-in tools: read_file, list_directory."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any
+
+from coding_agent.config import AgentConfig
+from coding_agent.permissions import SafetyLabel
+from coding_agent.tools.base import ToolResult
+from coding_agent.tools.registry import ToolRegistry
+
+
+# ---------------------------------------------------------------------------
+# read_file
+# ---------------------------------------------------------------------------
+
+class ReadFileTool:
+    @property
+    def name(self) -> str:
+        return "read_file"
+
+    @property
+    def description(self) -> str:
+        return "Read the contents of a file with optional line offset and limit."
+
+    @property
+    def parameters_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to read"},
+                "offset": {"type": "integer", "description": "Starting line (0-based)", "default": 0},
+                "limit": {"type": "integer", "description": "Max lines to return", "default": 200},
+            },
+            "required": ["path"],
+        }
+
+    @property
+    def safety_label(self) -> SafetyLabel:
+        return SafetyLabel.READONLY
+
+    def run(self, *, arguments: dict[str, Any], config: AgentConfig) -> ToolResult:
+        raw_path = arguments.get("path", "")
+        path = Path(raw_path) if Path(raw_path).is_absolute() else config.working_directory / raw_path
+        path = path.resolve()
+
+        if not config.is_path_allowed(path):
+            return ToolResult(False, "", f"Path {path} is outside allowed directories")
+
+        if not path.is_file():
+            return ToolResult(False, "", f"Not a file: {path}")
+
+        offset = max(int(arguments.get("offset", 0)), 0)
+        limit = min(max(int(arguments.get("limit", 200)), 1), 500)
+
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            return ToolResult(False, "", str(exc))
+
+        selected = lines[offset : offset + limit]
+        numbered = "\n".join(
+            f"  {offset + i + 1:>4} | {line}" for i, line in enumerate(selected)
+        )
+        return ToolResult(True, numbered)
+
+
+# ---------------------------------------------------------------------------
+# list_directory
+# ---------------------------------------------------------------------------
+
+class ListDirectoryTool:
+    @property
+    def name(self) -> str:
+        return "list_directory"
+
+    @property
+    def description(self) -> str:
+        return "List the contents of a directory and show its absolute path."
+
+    @property
+    def parameters_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Directory path (default: working directory)"},
+            },
+        }
+
+    @property
+    def safety_label(self) -> SafetyLabel:
+        return SafetyLabel.READONLY
+
+    def run(self, *, arguments: dict[str, Any], config: AgentConfig) -> ToolResult:
+        raw_path = arguments.get("path", "")
+        if raw_path:
+            path = Path(raw_path) if Path(raw_path).is_absolute() else config.working_directory / raw_path
+        else:
+            path = config.working_directory
+        path = path.resolve()
+
+        if not config.is_path_allowed(path):
+            return ToolResult(False, "", f"Path {path} is outside allowed directories")
+
+        if not path.is_dir():
+            return ToolResult(False, "", f"Not a directory: {path}")
+
+        try:
+            entries = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except OSError as exc:
+            return ToolResult(False, "", str(exc))
+
+        lines: list[str] = []
+        for entry in entries:
+            if entry.is_dir():
+                lines.append(f"  {entry.name}/")
+            else:
+                try:
+                    size = entry.stat().st_size
+                except OSError:
+                    size = 0
+                lines.append(f"  {entry.name}  ({_human_size(size)})")
+
+        return ToolResult(True, f"[directory: {path}]\n" + ("\n".join(lines) if lines else "(empty directory)"))
+
+
+def _human_size(nbytes: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if nbytes < 1024:
+            return f"{nbytes:.0f} {unit}" if unit == "B" else f"{nbytes:.1f} {unit}"
+        nbytes /= 1024
+    return f"{nbytes:.1f} TB"
+
+
+# ---------------------------------------------------------------------------
+# Registration helper
+# ---------------------------------------------------------------------------
+
+def register_builtin_tools(registry: ToolRegistry) -> None:
+    """Register all built-in tools into *registry*."""
+    from coding_agent.tools.file_write import EditFileTool, WriteFileTool
+    from coding_agent.tools.search import SearchTool
+    from coding_agent.tools.shell import RunCommandTool
+
+    registry.register(ReadFileTool())
+    registry.register(ListDirectoryTool())
+    registry.register(WriteFileTool())
+    registry.register(EditFileTool())
+    registry.register(SearchTool())
+    registry.register(RunCommandTool())

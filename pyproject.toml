@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forge-code"
+version = "0.1.0"
+description = "ForgeCode - An AI coding agent"
+requires-python = ">=3.10"
+dependencies = ["prompt_toolkit>=3.0"]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40.0"]
+openai = ["openai>=1.0.0"]
+dev = ["pytest>=7.0", "pytest-cov"]
+
+[project.scripts]
+forge-code = "coding_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
