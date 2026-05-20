@@ -720,6 +720,23 @@ class AgentRuntime:
     def run(self) -> None:
         self._io.print_banner(self._config, self._session, self._token_tracker)
 
+        if self._session is not None and getattr(self._session, "resumed", False):
+            messages = [
+                m for m in self._session.messages
+                if m.role in ("user", "assistant") and (m.content or "").strip()
+            ]
+            if not messages:
+                self._io.print_system("已恢复会话，但暂无对话记录")
+            else:
+                shown = messages[-20:]
+                self._io.print_system(f"Loaded {len(messages)} messages. Showing latest 20.")
+                for msg in shown:
+                    content = self._format_history_content(msg.content)
+                    if msg.role == "user":
+                        self._io.print_system(f"[user]\n{content}")
+                    else:
+                        self._io.print_assistant(f"[assistant]\n{content}")
+
         while True:
             user_input = self._io.prompt_user()
             if user_input is None:
@@ -886,6 +903,21 @@ class AgentRuntime:
         # Single permission check (path sandbox + safety label + command policy)
         path_val = tool_call.arguments.get("path")
         path = Path(path_val) if path_val else None
+
+        if path and hasattr(self._config, "needs_path_approval"):
+            if self._config.needs_path_approval(path):
+                resolved_path = path.resolve()
+                approval_dir = resolved_path.parent if not resolved_path.is_dir() else resolved_path
+                if not self._confirm_path_access(tool_call, approval_dir):
+                    self._io.print_error("Permission denied: Path access denied by user")
+                    self._context.add_tool_result(
+                        tool_call.tool_name,
+                        ToolResult(False, "", "Permission denied: Path access denied by user"),
+                        tool_call_id=tool_call.id,
+                    )
+                    return
+                self._config.approve_directory(approval_dir)
+
         command = tool_call.arguments.get("command")
         req = PermissionRequest(safety_label=tool.safety_label, path=path, command=command)
         result = self._permissions.check(req)
@@ -959,6 +991,21 @@ class AgentRuntime:
 
             path_val = tc.arguments.get("path")
             path = Path(path_val) if path_val else None
+
+            if path and hasattr(self._config, "needs_path_approval"):
+                if self._config.needs_path_approval(path):
+                    resolved_path = path.resolve()
+                    approval_dir = resolved_path.parent if not resolved_path.is_dir() else resolved_path
+                    if not self._confirm_path_access(tc, approval_dir):
+                        self._io.print_error("Permission denied: Path access denied by user")
+                        self._context.add_tool_result(
+                            tc.tool_name,
+                            ToolResult(False, "", "Permission denied: Path access denied by user"),
+                            tool_call_id=tc.id,
+                        )
+                        continue
+                    self._config.approve_directory(approval_dir)
+
             req = PermissionRequest(safety_label=tool.safety_label, path=path)
             result = self._permissions.check(req)
             if not result.allowed:
@@ -1009,6 +1056,17 @@ class AgentRuntime:
         if command:
             parts.append(f"  Command: {command}")
         return self._io.confirm("\n".join(parts))
+
+    def _confirm_path_access(self, tool_call: ToolCall, directory: Path) -> bool:
+        """Prompt the user to approve access to a directory outside the sandbox."""
+        parts = [
+            f"Allow {tool_call.tool_name} to access a path outside the working directory?",
+            f"  Path: {tool_call.arguments.get('path', '?')}",
+            f"  Directory to approve: {directory}",
+            f"  (This directory will be permitted for the rest of the session)",
+        ]
+        return self._io.confirm("\n".join(parts))
+
 
     def _consume_stream(
         self, stream_gen: Generator[str | StreamChunk, None, ModelResponse]
@@ -1075,7 +1133,7 @@ class AgentRuntime:
                 "\n\nSession:\n"
                 f"  Active session: {self._session.metadata.session_id}\n"
                 "  Use --list-sessions to list all sessions\n"
-                "  Use /history to view the saved transcript\n"
+                "  Use /history [count|all] to view the saved transcript\n"
                 "  Use --session <id> to resume a session\n"
                 "  Use --resume to resume the latest session"
             )
@@ -1098,14 +1156,6 @@ class AgentRuntime:
             self._io.print_system("No active session.")
             return
 
-        limit = 20
-        if raw_limit:
-            try:
-                limit = max(1, int(raw_limit))
-            except ValueError:
-                self._io.print_error("Usage: /history [count]")
-                return
-
         messages = [
             m for m in self._session.messages
             if m.role in ("user", "assistant") and (m.content or "").strip()
@@ -1114,13 +1164,30 @@ class AgentRuntime:
             self._io.print_system("No conversation history yet.")
             return
 
-        shown = messages[-limit:]
-        if len(shown) < len(messages):
-            self._io.print_system(
-                f"Showing last {len(shown)} of {len(messages)} conversation messages."
-            )
+        limit = 20
+        show_all = False
+        raw_limit = raw_limit.strip().lower()
+        if raw_limit:
+            if raw_limit == "all":
+                show_all = True
+            else:
+                try:
+                    limit = max(1, int(raw_limit))
+                except ValueError:
+                    self._io.print_error("Usage: /history [count|all]")
+                    return
+
+        if show_all:
+            shown = messages
+            self._io.print_system(f"Showing all {len(messages)} conversation messages.")
         else:
-            self._io.print_system(f"Showing {len(shown)} conversation messages.")
+            shown = messages[-limit:]
+            if len(shown) < len(messages):
+                self._io.print_system(
+                    f"Showing last {len(shown)} of {len(messages)} conversation messages."
+                )
+            else:
+                self._io.print_system(f"Showing {len(shown)} conversation messages.")
 
         for msg in shown:
             content = self._format_history_content(msg.content)

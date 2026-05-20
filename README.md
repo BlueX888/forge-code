@@ -29,23 +29,57 @@ ForgeCode 采用分层结构，核心模块如下：
 3. 模型返回文本或工具调用；工具调用先经过 `safety` 校验。
 4. 只读工具可并行执行；写文件和命令执行会按权限策略确认或拦截。
 5. 工具结果写回上下文，模型继续推理，直到生成最终回复。
-6. 默认启用会话，并优先续接最近的有效会话；消息历史和 token 用量会自动保存，也可使用 `--session` 新建会话或 `--no-session` 临时关闭会话功能。
+6. 默认启动始终新建会话；消息历史和 token 用量会自动保存，也可使用 `--resume` 恢复最近有内容的会话，`--session ID` 恢复指定会话，或 `--no-session` 临时关闭会话功能。
 
 ## 安装
 
-需要 Python 3.10 或更高版本。
+需要 Python 3.10 或更高版本，且推荐使用 **pipx** 进行统一的 CLI 安装，以避免依赖冲突和 PATH 配置问题。
+
+### 1. 准备 pipx (前置工具)
+
+根据您的操作系统，选择以下方式之一安装 `pipx`：
+
+- **macOS**:
+  ```bash
+  brew install pipx
+  pipx ensurepath
+  ```
+  安装完成后，**请重启您的终端**以使 PATH 配置生效。
+
+- **Windows**:
+  ```powershell
+  scoop install pipx  # 或使用 pip: python -m pip install --user pipx
+  pipx ensurepath
+  ```
+  *注：如果使用 pip 安装的 pipx，可能还需要运行 `register-python-argcomplete`。*
+
+- **Linux**:
+  ```bash
+  sudo apt install pipx  # Debian/Ubuntu
+  pipx ensurepath
+  ```
+
+---
+
+### 2. 安装 ForgeCode
+
+克隆仓库并使用 `pipx` 进行本地可编辑 (editable) 安装：
 
 ```bash
 git clone https://github.com/BlueX888/forge-code.git
 cd forge-code
 
-pip install -e ".[openai,anthropic]"
+# 如果之前安装过旧版本，请先卸载
+pipx uninstall forge-code
+
+# 统一安装命令
+pipx install -e .
 ```
 
-开发环境可额外安装测试依赖：
+安装完成后，即可直接在任意目录下使用 `forge-code` 命令：
 
 ```bash
-pip install -e ".[dev]"
+forge-code --help
 ```
 
 ## 快速开始
@@ -142,6 +176,18 @@ thinking_budget = 10000
 4. **项目专属配置**：项目目录下的 `.forgecode.toml` 仍被读取用于配置 `[agent]`、`[commands]` 等参数，实现按项目独立控制权限、安全级别及自定义工具。
 
 ## 开发
+
+开发者统一使用 `pipx` 以可编辑 (editable) 模式安装并包含开发/测试依赖：
+
+```bash
+# 如果已安装旧版本，请先卸载
+pipx uninstall forge-code
+
+# 安装可编辑版本及开发依赖
+pipx install --editable --include-deps ".[dev]"
+```
+
+运行单元测试：
 
 ```bash
 pytest

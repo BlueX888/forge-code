@@ -38,6 +38,7 @@ class SessionData:
     metadata: SessionMetadata
     messages: list[Message]
     context_messages: list[Message] | None = None
+    resumed: bool = False
 
 
 # ---------------------------------------------------------------------------

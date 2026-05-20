@@ -88,3 +88,38 @@ class PermissionChecker:
             if result is not None:
                 return result
         return PermissionResult(False, "Denied by default policy")
+
+
+class DynamicPathConfig:
+    """Wraps an immutable AgentConfig with a mutable set of session-approved directories."""
+
+    def __init__(self, config: AgentConfig) -> None:
+        self._config = config
+        self._approved_directories: set[Path] = set()
+
+    def __getattr__(self, name: str):
+        return getattr(self._config, name)
+
+    def approve_directory(self, directory: Path) -> None:
+        self._approved_directories.add(directory.resolve())
+
+    def needs_path_approval(self, path: Path) -> bool:
+        """True if path is outside both the static sandbox and dynamic approvals."""
+        resolved = Path(path).resolve()
+        if self._config.is_path_allowed(resolved):
+            return False
+        return not any(
+            resolved == d or resolved.is_relative_to(d)
+            for d in self._approved_directories
+        )
+
+    def is_path_allowed(self, path: Path) -> bool:
+        """Override: check static sandbox + dynamic approvals."""
+        if self._config.is_path_allowed(path):
+            return True
+        resolved = Path(path).resolve()
+        return any(
+            resolved == d or resolved.is_relative_to(d)
+            for d in self._approved_directories
+        )
+

@@ -172,6 +172,9 @@ def main(argv: list[str] | None = None) -> None:
         cli_thinking_budget=args.thinking_budget,
     )
 
+    from safety.permissions import DynamicPathConfig
+    config = DynamicPathConfig(config)
+
     registry = ToolRegistry()
     register_builtin_tools(registry)
 
@@ -222,6 +225,7 @@ def main(argv: list[str] | None = None) -> None:
             if session is None:
                 io.print_error("No sessions to resume.")
                 sys.exit(1)
+            session.resumed = True
             io.print_system(
                 f"Resuming session: {session.metadata.session_id} "
                 f"({len(session.messages)} messages)"
@@ -239,6 +243,7 @@ def main(argv: list[str] | None = None) -> None:
                 # ID given: resume
                 try:
                     session = session_manager.load(args.session)  # type: ignore[union-attr]
+                    session.resumed = True
                     io.print_system(
                         f"Resuming session: {session.metadata.session_id} "
                         f"({len(session.messages)} messages)"
@@ -250,22 +255,13 @@ def main(argv: list[str] | None = None) -> None:
                     io.print_error(f"Corrupt session file: {exc}")
                     sys.exit(1)
         else:
-            # Default behavior: continue the latest useful session, or create one.
-            session = session_manager.load_latest_prefer_non_empty()  # type: ignore[union-attr]
-            if session is not None and session.messages:
-                io.print_system(
-                    f"Resuming session: {session.metadata.session_id} "
-                    f"({len(session.messages)} messages)"
-                )
-            elif session is not None:
-                io.print_system(f"Resuming session: {session.metadata.session_id}")
-            else:
-                session = session_manager.create_session(  # type: ignore[union-attr]
-                    model_name=config.model_name,
-                    provider=config.provider,
-                    working_directory=str(working_dir),
-                )
-                io.print_system(f"New session: {session.metadata.session_id}")
+            # Default behavior: always create a new session
+            session = session_manager.create_session(  # type: ignore[union-attr]
+                model_name=config.model_name,
+                provider=config.provider,
+                working_directory=str(working_dir),
+            )
+            io.print_system(f"New session: {session.metadata.session_id}")
 
     if not config.model_name or config.model_name == "placeholder":
         io.print_error(
@@ -288,8 +284,7 @@ def main(argv: list[str] | None = None) -> None:
             )
         except ImportError:
             io.print_error(
-                "anthropic package not installed. "
-                "Install with: pip install forge-code[anthropic]"
+                "Provider SDK missing. Reinstall ForgeCode with the README pipx install command."
             )
             sys.exit(1)
     else:
@@ -302,8 +297,7 @@ def main(argv: list[str] | None = None) -> None:
             )
         except ImportError:
             io.print_error(
-                "openai package not installed. "
-                "Install with: pip install openai"
+                "Provider SDK missing. Reinstall ForgeCode with the README pipx install command."
             )
             sys.exit(1)
 

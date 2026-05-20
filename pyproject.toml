@@ -7,7 +7,11 @@ name = "forge-code"
 version = "0.1.0"
 description = "ForgeCode - An AI coding agent"
 requires-python = ">=3.10"
-dependencies = ["prompt_toolkit>=3.0"]
+dependencies = [
+    "prompt_toolkit>=3.0",
+    "openai>=1.0.0",
+    "anthropic>=0.40.0"
+]
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40.0"]
