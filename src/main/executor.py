@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 
-from coding_agent.permissions import SafetyLabel
-from coding_agent.tools.base import ToolCall
-from coding_agent.tools.registry import ToolRegistry
+from safety.permissions import SafetyLabel
+from tools.base import ToolCall
+from tools.registry import ToolRegistry
 
 
 @dataclasses.dataclass(frozen=True)

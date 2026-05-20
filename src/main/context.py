@@ -6,13 +6,13 @@ import dataclasses
 from collections import deque
 from typing import TYPE_CHECKING, Any, Callable
 
-from coding_agent.config import AgentConfig
-from coding_agent.prompts import SystemPromptBuilder
-from coding_agent.tools.base import ToolCall, ToolResult
-from coding_agent.tools.registry import ToolRegistry
+from main.config import AgentConfig
+from main.prompts import SystemPromptBuilder
+from tools.base import ToolCall, ToolResult
+from tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
-    from coding_agent.context_manager import ContextWindowManager
+    from main.context_manager import ContextWindowManager
 
 
 @dataclasses.dataclass

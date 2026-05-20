@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from coding_agent.config import AgentConfig
-from coding_agent.permissions import SafetyLabel
-from coding_agent.tools.base import ToolResult
+from main.config import AgentConfig
+from safety.permissions import SafetyLabel
+from tools.base import ToolResult
 
 
 def _maybe_update_memory_index(target: Path, config: AgentConfig) -> None:
@@ -20,7 +20,7 @@ def _maybe_update_memory_index(target: Path, config: AgentConfig) -> None:
         return  # Not in memory directory
     if target.suffix != ".md" or target.name == "MEMORY.md":
         return
-    from coding_agent.memory import auto_update_memory_index
+    from memory.memory import auto_update_memory_index
     auto_update_memory_index(config)
 
 

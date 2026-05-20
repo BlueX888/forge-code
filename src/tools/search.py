@@ -7,9 +7,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-from coding_agent.config import AgentConfig
-from coding_agent.permissions import SafetyLabel
-from coding_agent.tools.base import ToolResult
+from main.config import AgentConfig
+from safety.permissions import SafetyLabel
+from tools.base import ToolResult
 
 _MAX_RESULTS = 200
 _MAX_FILE_SIZE = 1_048_576  # 1 MB

@@ -46,6 +46,91 @@ def load_config_file(working_directory: Path) -> dict:
     return merged
 
 
+def project_config_path(working_directory: Path) -> Path:
+    """Return the Path to the project configuration file."""
+    return working_directory / _PROJECT_CONFIG_NAME
+
+
+def _serialize_val(val: object) -> str:
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    elif isinstance(val, (int, float)):
+        return str(val)
+    elif isinstance(val, str):
+        escaped = val.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
+        return f'"{escaped}"'
+    elif isinstance(val, list):
+        items = [_serialize_val(item) for item in val]
+        return f"[{', '.join(items)}]"
+    else:
+        return f'"{val}"'
+
+
+def _serialize_toml(cfg: dict) -> str:
+    """Serialize a dictionary with section dictionaries to TOML format."""
+    lines = []
+    # Write top-level key-values first
+    for k, v in cfg.items():
+        if not isinstance(v, dict):
+            lines.append(f"{k} = {_serialize_val(v)}")
+            
+    # Write sections (tables)
+    for section_key, section_val in cfg.items():
+        if isinstance(section_val, dict):
+            if lines:
+                lines.append("")
+            lines.append(f"[{section_key}]")
+            for k, v in section_val.items():
+                lines.append(f"{k} = {_serialize_val(v)}")
+                
+    return "\n".join(lines) + "\n"
+
+
+def has_project_model_config(working_directory: Path) -> bool:
+    """Check if the project has a valid model configuration."""
+    path = project_config_path(working_directory)
+    if not path.is_file():
+        return False
+    cfg = _load_toml(path)
+    model = cfg.get("model", {})
+    if not isinstance(model, dict):
+        return False
+    return bool(
+        model.get("name")
+        and model.get("api_key")
+        and model.get("base_url")
+    )
+
+
+def save_project_model_config(
+    working_directory: Path,
+    *,
+    name: str | None = None,
+    provider: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> None:
+    """Save or update the project model configuration in .forgecode.toml."""
+    path = project_config_path(working_directory)
+    cfg = _load_toml(path)
+    
+    if "model" not in cfg or not isinstance(cfg["model"], dict):
+        cfg["model"] = {}
+        
+    if name is not None:
+        cfg["model"]["name"] = name
+    if provider is not None:
+        cfg["model"]["provider"] = provider
+    if api_key is not None:
+        cfg["model"]["api_key"] = api_key
+    if base_url is not None:
+        cfg["model"]["base_url"] = base_url
+        
+    content = _serialize_toml(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # DangerousMode
 # ---------------------------------------------------------------------------
@@ -81,7 +166,7 @@ class AgentConfig:
 
     working_directory: Path
     allow_dangerous_operations: DangerousMode = DangerousMode.ASK
-    model_name: str = "placeholder"
+    model_name: str | None = None
     provider: str = "openai"  # "openai" | "anthropic"
     api_key: str | None = None
     base_url: str | None = None
@@ -130,7 +215,7 @@ class AgentConfig:
 
         return cls(
             working_directory=working_directory,
-            model_name=cli_model or model_section.get("name", "placeholder"),
+            model_name=cli_model or model_section.get("name"),
             provider=cli_provider or model_section.get("provider", "openai"),
             api_key=cli_api_key or model_section.get("api_key"),
             base_url=cli_base_url or model_section.get("base_url"),

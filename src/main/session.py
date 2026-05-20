@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from coding_agent.context import Message
-from coding_agent.tools.base import ToolCall
+from main.context import Message
+from tools.base import ToolCall
 
 
 # ---------------------------------------------------------------------------

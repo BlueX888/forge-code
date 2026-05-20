@@ -24,16 +24,16 @@ class StreamChunk:
     text: str
     chunk_type: str = "text"  # "text" | "thinking"
 
-from coding_agent.config import AgentConfig, DangerousMode
-from coding_agent.context import ContextBuilder, Message
-from coding_agent.context_manager import ContextWindowManager
-from coding_agent.executor import group_tool_calls
-from coding_agent.io import AgentIO
-from coding_agent.permissions import SafetyLabel, PermissionChecker, PermissionRequest
-from coding_agent.session import SessionData, SessionManager
-from coding_agent.token_tracker import TokenUsageTracker
-from coding_agent.tools.base import ModelResponse, ToolCall, ToolResult
-from coding_agent.tools.registry import ToolRegistry
+from main.config import AgentConfig, DangerousMode
+from main.context import ContextBuilder, Message
+from main.context_manager import ContextWindowManager
+from main.executor import group_tool_calls
+from cli.io import AgentIO
+from safety.permissions import SafetyLabel, PermissionChecker, PermissionRequest
+from main.session import SessionData, SessionManager
+from main.token_tracker import TokenUsageTracker
+from tools.base import ModelResponse, ToolCall, ToolResult
+from tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +733,7 @@ class AgentRuntime:
                 self._io.print_usage_detail(self._token_tracker)
                 continue
             if user_input == "/memory":
-                from coding_agent.memory import list_memories
+                from memory.memory import list_memories
                 memories = list_memories(self._config)
                 if not memories:
                     self._io.print_system("No memories found for this project.")
@@ -766,7 +766,7 @@ class AgentRuntime:
         # Memory prefetch (background thread)
         memory_future = None
         if self._config.memory_enabled:
-            from coding_agent.memory import start_memory_prefetch, PREFETCH_TIMEOUT
+            from memory.memory import start_memory_prefetch, PREFETCH_TIMEOUT
             memory_future = start_memory_prefetch(
                 query=user_input,
                 config=self._config,
@@ -1050,7 +1050,7 @@ class AgentRuntime:
                 self._io.print_error(f"Failed to save session: {exc}")
 
     def _print_help(self) -> None:
-        from coding_agent.commands import format_help_text
+        from cli.commands import format_help_text
         session_help = ""
         if self._session is not None:
             session_help = (
@@ -1063,7 +1063,7 @@ class AgentRuntime:
         self._io.print_system(format_help_text(session_help))
 
     def _print_commands_list(self) -> None:
-        from coding_agent.commands import format_command_list
+        from cli.commands import format_command_list
         self._io.print_system(format_command_list())
 
     def _print_tools(self) -> None:

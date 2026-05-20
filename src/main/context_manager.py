@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from coding_agent.config import AgentConfig
-    from coding_agent.context import Message
+    from main.config import AgentConfig
+    from main.context import Message
 
 
 # Type alias: summarize callback takes text, returns summary or None on failure.
@@ -327,7 +327,7 @@ class AutoCompactor:
         if summary is None:
             return False
 
-        from coding_agent.context import Message as Msg
+        from main.context import Message as Msg
 
         summary_msg = Msg(
             role="user",

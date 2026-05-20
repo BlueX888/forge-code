@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from coding_agent.config import AgentConfig
+    from main.config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ def recall_memories(
     )
 
     try:
-        from coding_agent.context import Message
+        from main.context import Message
         response = model_client.complete(
             [Message(role="user", content=prompt)], []
         )

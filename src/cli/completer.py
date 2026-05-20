@@ -5,7 +5,7 @@ from __future__ import annotations
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 
-from coding_agent.commands import SLASH_COMMANDS
+from cli.commands import SLASH_COMMANDS
 
 
 class SlashCommandCompleter(Completer):

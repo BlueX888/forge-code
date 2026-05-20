@@ -30,6 +30,7 @@ MANIFEST
 session/
 .env
 *.local.toml
+.forgecode.toml
 
 # Virtual Environments
 .venv/
@@ -66,3 +67,8 @@ htmlcov/
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Test-related directories
+tests/
+.pytest_cache/
+

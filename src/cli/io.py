@@ -7,14 +7,14 @@ import shutil
 import sys
 from typing import Any
 
-from coding_agent.tools.base import ToolResult
+from tools.base import ToolResult
 
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from coding_agent.config import AgentConfig
-    from coding_agent.session import SessionData
-    from coding_agent.token_tracker import TokenUsageTracker
+    from main.config import AgentConfig
+    from main.session import SessionData
+    from main.token_tracker import TokenUsageTracker
 
 
 _TOOL_ICONS: dict[str, str] = {
@@ -81,7 +81,7 @@ class AgentIO:
         if input_stream is None and output_stream is None and _supports_color(self._out):
             try:
                 from prompt_toolkit import PromptSession
-                from coding_agent.completer import SlashCommandCompleter
+                from cli.completer import SlashCommandCompleter
                 self._prompt_session = PromptSession(
                     completer=SlashCommandCompleter(),
                     complete_while_typing=True,
@@ -112,11 +112,10 @@ class AgentIO:
             if prompt == "> " and self._color:
                 styled_prompt = self._c("1;32", ">") + " "
             if self._prompt_session is not None:
-                if prompt == "> " and self._color:
+                if self._color:
                     from prompt_toolkit.formatted_text import ANSI
-                    line = self._prompt_session.prompt(
-                        ANSI("\033[1;32m>\033[0m ")
-                    )
+                    prompt_text = ANSI("\033[1;32m>\033[0m " if prompt == "> " else prompt)
+                    line = self._prompt_session.prompt(prompt_text)
                 else:
                     line = self._prompt_session.prompt(prompt)
             else:
@@ -209,8 +208,8 @@ class AgentIO:
         token_tracker: TokenUsageTracker,
     ) -> None:
         """Print the CRT retro startup banner."""
-        from coding_agent import __version__
-        from coding_agent.banner import format_banner
+        from main import __version__
+        from cli.banner import format_banner
 
         terminal_width = shutil.get_terminal_size((80, 24)).columns
         lines = format_banner(

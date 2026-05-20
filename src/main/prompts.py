@@ -8,8 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from coding_agent.config import AgentConfig
-from coding_agent.tools.registry import ToolRegistry
+from main.config import AgentConfig
+from tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ class SystemPromptBuilder:
             lines.append(claude_md)
 
         if self._config.memory_enabled:
-            from coding_agent.memory import build_memory_prompt_section
+            from memory.memory import build_memory_prompt_section
             memory_section = build_memory_prompt_section(self._config)
             if memory_section:
                 lines.append(memory_section)

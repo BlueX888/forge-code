@@ -9,8 +9,8 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from coding_agent.config import AgentConfig
-    from coding_agent.permissions import PermissionRequest, PermissionResult, Rule
+    from main.config import AgentConfig
+    from safety.permissions import PermissionRequest, PermissionResult, Rule
 
 
 class CommandRiskLevel(enum.Enum):
@@ -160,8 +160,8 @@ class CommandPolicy:
 
 def make_command_rule(policy: CommandPolicy) -> "Rule":
     """Create a permission rule that classifies commands via *policy*."""
-    from coding_agent.config import DangerousMode
-    from coding_agent.permissions import PermissionResult
+    from main.config import DangerousMode
+    from safety.permissions import PermissionResult
 
     def _command_rule(req: "PermissionRequest", cfg: "AgentConfig") -> "PermissionResult | None":
         if req.command is None:

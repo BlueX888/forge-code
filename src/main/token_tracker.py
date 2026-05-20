@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
-from coding_agent.tools.base import ModelResponse
+from tools.base import ModelResponse
 
 
 @dataclasses.dataclass

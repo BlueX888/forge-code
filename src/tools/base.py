@@ -5,8 +5,8 @@ from __future__ import annotations
 import dataclasses
 from typing import Any, Protocol, runtime_checkable
 
-from coding_agent.config import AgentConfig
-from coding_agent.permissions import SafetyLabel
+from main.config import AgentConfig
+from safety.permissions import SafetyLabel
 
 
 # ---------------------------------------------------------------------------

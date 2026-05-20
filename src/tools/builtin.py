@@ -6,10 +6,10 @@ import os
 from pathlib import Path
 from typing import Any
 
-from coding_agent.config import AgentConfig
-from coding_agent.permissions import SafetyLabel
-from coding_agent.tools.base import ToolResult
-from coding_agent.tools.registry import ToolRegistry
+from main.config import AgentConfig
+from safety.permissions import SafetyLabel
+from tools.base import ToolResult
+from tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +140,9 @@ def _human_size(nbytes: int) -> str:
 
 def register_builtin_tools(registry: ToolRegistry) -> None:
     """Register all built-in tools into *registry*."""
-    from coding_agent.tools.file_write import EditFileTool, WriteFileTool
-    from coding_agent.tools.search import SearchTool
-    from coding_agent.tools.shell import RunCommandTool
+    from tools.file_write import EditFileTool, WriteFileTool
+    from tools.search import SearchTool
+    from tools.shell import RunCommandTool
 
     registry.register(ReadFileTool())
     registry.register(ListDirectoryTool())

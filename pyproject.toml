@@ -15,7 +15,7 @@ openai = ["openai>=1.0.0"]
 dev = ["pytest>=7.0", "pytest-cov"]
 
 [project.scripts]
-forge-code = "coding_agent.cli:main"
+forge-code = "cli.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

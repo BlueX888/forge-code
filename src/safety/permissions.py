@@ -7,7 +7,7 @@ import enum
 from pathlib import Path
 from typing import Callable
 
-from coding_agent.config import AgentConfig, DangerousMode
+from main.config import AgentConfig, DangerousMode
 
 
 class SafetyLabel(enum.Enum):
