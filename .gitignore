@@ -72,3 +72,8 @@ Thumbs.db
 tests/
 .pytest_cache/
 
+# Unsubmitted planning/contributing documents
+REFACTOR_PLAN.md
+CONTRIBUTING.md
+
+
