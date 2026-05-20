@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import copy
 from collections import deque
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -70,7 +71,11 @@ class ContextBuilder:
     def load_history(self, messages: list[Message]) -> None:
         """Load persisted messages into the deque without triggering the callback."""
         for msg in messages:
-            self._history.append(msg)
+            self._history.append(copy.deepcopy(msg))
+
+    def history_snapshot(self) -> list[Message]:
+        """Return a detached copy of the current model context history."""
+        return [copy.deepcopy(msg) for msg in self._history]
 
     def _replace_history(self, messages: list[Message]) -> None:
         """Replace the entire history deque (used by Tier 4 compaction)."""

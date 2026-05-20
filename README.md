@@ -29,7 +29,7 @@ ForgeCode 采用分层结构，核心模块如下：
 3. 模型返回文本或工具调用；工具调用先经过 `safety` 校验。
 4. 只读工具可并行执行；写文件和命令执行会按权限策略确认或拦截。
 5. 工具结果写回上下文，模型继续推理，直到生成最终回复。
-6. 如果启用会话，消息历史和 token 用量会自动保存，后续可通过 `--resume` 恢复。
+6. 默认启用会话，并优先续接最近的有效会话；消息历史和 token 用量会自动保存，也可使用 `--session` 新建会话或 `--no-session` 临时关闭会话功能。
 
 ## 安装
 
@@ -80,7 +80,9 @@ forge-code
 | `--dangerous-mode` | 高风险操作策略：`ask`、`deny`、`allow` |
 | `--allow-dangerous` | 等同于 `--dangerous-mode allow` |
 | `--prompt-file` | 从文件读取提示词，执行一次后退出 |
+| `--session [ID]` | 开启或恢复会话。不带 ID：新建会话；带 ID：恢复指定会话 |
 | `--resume` | 恢复最近一次会话 |
+| `--no-session` | 临时禁用会话创建、加载和持久化 |
 | `--list-sessions` | 查看已保存会话 |
 | `--delete-session ID` | 删除指定会话 |
 
@@ -102,6 +104,7 @@ forge-code --help
 | `/tools` | 查看可用工具 |
 | `/usage` | 查看 token 用量 |
 | `/memory` | 查看记忆内容 |
+| `/history [count]` | 查看已保存的会话记录 |
 | `/help` | 查看帮助 |
 | `/quit` | 退出 |
 

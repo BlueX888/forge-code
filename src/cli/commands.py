@@ -20,6 +20,7 @@ SLASH_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/tools",  "List available tools"),
     SlashCommand("/usage",  "Show token usage statistics"),
     SlashCommand("/memory", "List stored memories"),
+    SlashCommand("/history", "Show saved conversation history", argument="[count]"),
     SlashCommand("/help",   "Show this help"),
     SlashCommand("/quit",   "Exit"),
     SlashCommand("/exit",   "Exit",                       hidden=True),

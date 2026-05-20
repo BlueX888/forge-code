@@ -37,6 +37,7 @@ class SessionMetadata:
 class SessionData:
     metadata: SessionMetadata
     messages: list[Message]
+    context_messages: list[Message] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +136,11 @@ class SessionManager:
             "session_id": session.metadata.session_id,
             "metadata": dataclasses.asdict(session.metadata),
             "messages": [_message_to_dict(m) for m in session.messages],
+            "context_messages": (
+                [_message_to_dict(m) for m in session.context_messages]
+                if session.context_messages is not None
+                else None
+            ),
         }
         target = self._dir / f"{session.metadata.session_id}.json"
         tmp = target.with_suffix(".tmp")
@@ -155,6 +161,21 @@ class SessionManager:
             return None
         latest = sessions[0]  # already sorted by updated_at desc
         return self.load(latest.session_id)
+
+    def load_latest_prefer_non_empty(self) -> SessionData | None:
+        """Load the latest session with messages, falling back to the latest session."""
+        sessions = self.list_sessions()
+        if not sessions:
+            return None
+
+        fallback: SessionData | None = None
+        for meta in sessions:
+            session = self.load(meta.session_id)
+            if fallback is None:
+                fallback = session
+            if session.messages:
+                return session
+        return fallback
 
     def list_sessions(self) -> list[SessionMetadata]:
         """Return all session metadata sorted by updated_at descending."""
@@ -200,4 +221,14 @@ class SessionManager:
     def _parse(raw: dict[str, Any]) -> SessionData:
         meta = SessionManager._parse_metadata(raw)
         messages = [_message_from_dict(m) for m in raw.get("messages", [])]
-        return SessionData(metadata=meta, messages=messages)
+        raw_context_messages = raw.get("context_messages")
+        context_messages = (
+            [_message_from_dict(m) for m in raw_context_messages]
+            if raw_context_messages is not None
+            else None
+        )
+        return SessionData(
+            metadata=meta,
+            messages=messages,
+            context_messages=context_messages,
+        )

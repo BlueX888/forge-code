@@ -114,6 +114,11 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help="Session storage directory (default: {working_dir}/session).",
     )
+    session_group.add_argument(
+        "--no-session",
+        action="store_true",
+        help="Disable session creation, persistence, and loading for this run.",
+    )
 
     args = parser.parse_args(argv)
 
@@ -179,11 +184,15 @@ def main(argv: list[str] | None = None) -> None:
     # -- Session setup ---------------------------------------------------
     from main.session import SessionManager, SessionData
 
+    if args.no_session and (args.resume or args.session is not None):
+        io.print_error("Cannot use --no-session when specifying --resume or --session.")
+        sys.exit(1)
+
     session_dir = (args.session_dir or working_dir / "session").resolve()
     session_manager: SessionManager | None = None
     session: SessionData | None = None
 
-    if args.list_sessions or args.delete_session or args.session is not None or args.resume:
+    if args.list_sessions or args.delete_session or not args.no_session:
         session_manager = SessionManager(session_dir)
 
     if args.list_sessions:
@@ -207,32 +216,56 @@ def main(argv: list[str] | None = None) -> None:
             io.print_error(f"Session not found: {args.delete_session}")
         return
 
-    if args.resume:
-        session = session_manager.load_latest()  # type: ignore[union-attr]
-        if session is None:
-            io.print_error("No sessions to resume.")
-            sys.exit(1)
-        io.print_system(f"Resuming session: {session.metadata.session_id}")
-    elif args.session is not None:
-        if args.session == "":
-            # No ID given: create new session
-            session = session_manager.create_session(  # type: ignore[union-attr]
-                model_name=config.model_name,
-                provider=config.provider,
-                working_directory=str(working_dir),
+    if not args.no_session:
+        if args.resume:
+            session = session_manager.load_latest_prefer_non_empty()  # type: ignore[union-attr]
+            if session is None:
+                io.print_error("No sessions to resume.")
+                sys.exit(1)
+            io.print_system(
+                f"Resuming session: {session.metadata.session_id} "
+                f"({len(session.messages)} messages)"
             )
-            io.print_system(f"New session: {session.metadata.session_id}")
+        elif args.session is not None:
+            if args.session == "":
+                # No ID given: create new session
+                session = session_manager.create_session(  # type: ignore[union-attr]
+                    model_name=config.model_name,
+                    provider=config.provider,
+                    working_directory=str(working_dir),
+                )
+                io.print_system(f"New session: {session.metadata.session_id}")
+            else:
+                # ID given: resume
+                try:
+                    session = session_manager.load(args.session)  # type: ignore[union-attr]
+                    io.print_system(
+                        f"Resuming session: {session.metadata.session_id} "
+                        f"({len(session.messages)} messages)"
+                    )
+                except FileNotFoundError:
+                    io.print_error(f"Session not found: {args.session}")
+                    sys.exit(1)
+                except ValueError as exc:
+                    io.print_error(f"Corrupt session file: {exc}")
+                    sys.exit(1)
         else:
-            # ID given: resume
-            try:
-                session = session_manager.load(args.session)  # type: ignore[union-attr]
+            # Default behavior: continue the latest useful session, or create one.
+            session = session_manager.load_latest_prefer_non_empty()  # type: ignore[union-attr]
+            if session is not None and session.messages:
+                io.print_system(
+                    f"Resuming session: {session.metadata.session_id} "
+                    f"({len(session.messages)} messages)"
+                )
+            elif session is not None:
                 io.print_system(f"Resuming session: {session.metadata.session_id}")
-            except FileNotFoundError:
-                io.print_error(f"Session not found: {args.session}")
-                sys.exit(1)
-            except ValueError as exc:
-                io.print_error(f"Corrupt session file: {exc}")
-                sys.exit(1)
+            else:
+                session = session_manager.create_session(  # type: ignore[union-attr]
+                    model_name=config.model_name,
+                    provider=config.provider,
+                    working_directory=str(working_dir),
+                )
+                io.print_system(f"New session: {session.metadata.session_id}")
 
     if not config.model_name or config.model_name == "placeholder":
         io.print_error(

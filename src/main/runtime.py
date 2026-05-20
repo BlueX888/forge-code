@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import dataclasses
 import json
 import re
@@ -683,18 +684,27 @@ class AgentRuntime:
 
         if session is not None:
             def _on_replace(messages: list[Message]) -> None:
-                session.messages.clear()
-                session.messages.extend(messages)
+                session.context_messages = [copy.deepcopy(m) for m in messages]
             on_replace = _on_replace
 
-        on_message = session.messages.append if session is not None else None
+        def _record_session_message(msg: Message) -> None:
+            if session is not None:
+                session.messages.append(copy.deepcopy(msg))
+
+        on_message = _record_session_message if session is not None else None
         self._context = ContextBuilder(
             config, registry, on_message=on_message,
             on_replace=on_replace, window_manager=window_manager,
         )
 
-        if session is not None and session.messages:
-            self._context.load_history(session.messages)
+        if session is not None:
+            context_messages = (
+                session.context_messages
+                if session.context_messages is not None
+                else session.messages
+            )
+            if context_messages:
+                self._context.load_history(context_messages)
 
         # Token usage tracking
         self._token_tracker = TokenUsageTracker(config.max_context_tokens)
@@ -742,6 +752,9 @@ class AgentRuntime:
                     for m in memories:
                         type_badge = f"[{m['type']}]"
                         self._io.print_system(f"  {type_badge:14s} {m['name']} -- {m['description']}")
+                continue
+            if user_input == "/history" or user_input.startswith("/history "):
+                self._print_history(user_input.removeprefix("/history").strip())
                 continue
 
             self._run_agent_turn(user_input)
@@ -1048,6 +1061,7 @@ class AgentRuntime:
             self._session.metadata.total_input_tokens = self._token_tracker.session_input
             self._session.metadata.total_output_tokens = self._token_tracker.session_output
             self._session.metadata.turn_count = self._token_tracker.turn_count
+            self._session.context_messages = self._context.history_snapshot()
             try:
                 self._session_manager.save(self._session)
             except OSError as exc:
@@ -1061,6 +1075,7 @@ class AgentRuntime:
                 "\n\nSession:\n"
                 f"  Active session: {self._session.metadata.session_id}\n"
                 "  Use --list-sessions to list all sessions\n"
+                "  Use /history to view the saved transcript\n"
                 "  Use --session <id> to resume a session\n"
                 "  Use --resume to resume the latest session"
             )
@@ -1077,3 +1092,48 @@ class AgentRuntime:
             return
         lines = [f"  {t['name']} — {t['description']}" for t in tools]
         self._io.print_system("Available tools:\n" + "\n".join(lines))
+
+    def _print_history(self, raw_limit: str = "") -> None:
+        if self._session is None:
+            self._io.print_system("No active session.")
+            return
+
+        limit = 20
+        if raw_limit:
+            try:
+                limit = max(1, int(raw_limit))
+            except ValueError:
+                self._io.print_error("Usage: /history [count]")
+                return
+
+        messages = [
+            m for m in self._session.messages
+            if m.role in ("user", "assistant") and (m.content or "").strip()
+        ]
+        if not messages:
+            self._io.print_system("No conversation history yet.")
+            return
+
+        shown = messages[-limit:]
+        if len(shown) < len(messages):
+            self._io.print_system(
+                f"Showing last {len(shown)} of {len(messages)} conversation messages."
+            )
+        else:
+            self._io.print_system(f"Showing {len(shown)} conversation messages.")
+
+        for msg in shown:
+            content = self._format_history_content(msg.content)
+            if msg.role == "user":
+                self._io.print_system(f"[user]\n{content}")
+            else:
+                self._io.print_assistant(f"[assistant]\n{content}")
+
+    @staticmethod
+    def _format_history_content(content: str) -> str:
+        content = content.strip()
+        max_chars = 4000
+        if len(content) <= max_chars:
+            return content
+        omitted = len(content) - max_chars
+        return f"{content[:max_chars].rstrip()}\n[truncated {omitted:,} chars]"
