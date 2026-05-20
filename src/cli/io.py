@@ -149,6 +149,23 @@ class AgentIO:
         except (ImportError, OSError):
             return False
 
+    def drain_input_buffer(self) -> None:
+        """Clear any remaining keystrokes from stdin buffer."""
+        if not hasattr(self._in, "isatty") or not self._in.isatty():
+            return
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                while msvcrt.kbhit():
+                    msvcrt.getch()
+            else:
+                import select
+                import os
+                while select.select([sys.stdin], [], [], 0)[0]:
+                    os.read(sys.stdin.fileno(), 1024)
+        except Exception:
+            pass
+
     def _drain_paste_buffer(self) -> list[str]:
         """Consume any remaining lines from a multi-line paste operation.
 

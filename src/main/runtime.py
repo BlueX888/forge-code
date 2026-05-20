@@ -30,6 +30,7 @@ from main.context import ContextBuilder, Message
 from main.context_manager import ContextWindowManager
 from main.executor import group_tool_calls
 from cli.io import AgentIO
+from cli.cancellation import AgentCancelled, CancellationToken, EscKeyMonitor
 from safety.permissions import SafetyLabel, PermissionChecker, PermissionRequest
 from main.session import SessionData, SessionManager
 from main.token_tracker import TokenUsageTracker
@@ -821,70 +822,96 @@ class AgentRuntime:
 
         self._token_tracker.begin_turn()
 
-        for _iteration in range(self._config.max_tool_iterations):
-            messages = self._context.build()
+        cancel_token = CancellationToken()
+        esc_monitor = EscKeyMonitor(cancel_token)
+        self._cancel_token = cancel_token
+        self._esc_monitor = esc_monitor
+        esc_monitor.start()
 
-            # Check for streaming support
-            stream_method = getattr(self._model, "complete_stream", None)
-            try:
-                if stream_method is not None:
-                    try:
-                        response = self._consume_stream(stream_method(messages, tools))
-                    except Exception:
+        try:
+            for _iteration in range(self._config.max_tool_iterations):
+                cancel_token.check()
+
+                messages = self._context.build()
+
+                # Check for streaming support
+                stream_method = getattr(self._model, "complete_stream", None)
+                try:
+                    if stream_method is not None:
+                        try:
+                            response = self._consume_stream(stream_method(messages, tools), cancel_token=cancel_token)
+                        except AgentCancelled:
+                            raise
+                        except Exception:
+                            response = self._model.complete(messages, tools)
+                            stream_method = None  # treat as non-streaming after fallback
+                    else:
                         response = self._model.complete(messages, tools)
-                        stream_method = None  # treat as non-streaming after fallback
-                else:
-                    response = self._model.complete(messages, tools)
-            except Exception as exc:
-                self._io.print_error(f"API Error: {exc}")
-                break
+                except AgentCancelled:
+                    raise
+                except Exception as exc:
+                    self._io.print_error(f"API Error: {exc}")
+                    break
 
-            # Record token usage
-            if response.input_tokens is not None:
-                self._token_tracker.record(response)
+                # Record token usage
+                if response.input_tokens is not None:
+                    self._token_tracker.record(response)
 
-            # Update token anchor from API usage
-            if response.input_tokens is not None:
-                self._context.update_token_anchor(response.input_tokens)
+                # Update token anchor from API usage
+                if response.input_tokens is not None:
+                    self._context.update_token_anchor(response.input_tokens)
 
-            # Display token summary
-            self._print_token_summary()
+                # Display token summary
+                self._print_token_summary()
 
-            # Try text-based fallback parsing if no native tool calls
-            tool_calls = response.tool_calls
-            if not tool_calls and response.text:
-                parsed = parse_tool_call(response.text)
-                if parsed:
-                    tool_calls = [parsed]
+                # Try text-based fallback parsing if no native tool calls
+                tool_calls = response.tool_calls
+                if not tool_calls and response.text:
+                    parsed = parse_tool_call(response.text)
+                    if parsed:
+                        tool_calls = [parsed]
 
-            if not tool_calls:
-                # Model is done reasoning — emit final response
-                if response.text:
-                    self._context.add_assistant_message(response.text, reasoning_content=response.reasoning_content)
-                    if stream_method is None:
-                        if response.reasoning_content and self._config.show_thinking:
-                            self._io.print_thinking(response.reasoning_content)
-                        self._io.print_assistant(response.text)
-                break
+                if not tool_calls:
+                    # Model is done reasoning — emit final response
+                    if response.text:
+                        self._context.add_assistant_message(response.text, reasoning_content=response.reasoning_content)
+                        if stream_method is None:
+                            if response.reasoning_content and self._config.show_thinking:
+                                self._io.print_thinking(response.reasoning_content)
+                            self._io.print_assistant(response.text)
+                    break
 
-            # Model wants to use tools — record the assistant message with tool calls
-            self._context.add_assistant_message(response.text, tool_calls=tool_calls, reasoning_content=response.reasoning_content)
-            if response.text and stream_method is None:
-                if response.reasoning_content and self._config.show_thinking:
-                    self._io.print_thinking(response.reasoning_content)
-                self._io.print_assistant(response.text)
+                # Model wants to use tools — record the assistant message with tool calls
+                self._context.add_assistant_message(response.text, tool_calls=tool_calls, reasoning_content=response.reasoning_content)
+                if response.text and stream_method is None:
+                    if response.reasoning_content and self._config.show_thinking:
+                        self._io.print_thinking(response.reasoning_content)
+                    self._io.print_assistant(response.text)
 
-            # Execute each tool call
-            self._execute_tool_calls(tool_calls)
+                cancel_token.check()
 
-            # Loop back: the model will see tool results and continue reasoning
-        else:
-            self._io.print_system(
-                f"Reached maximum tool iterations ({self._config.max_tool_iterations}). "
-                "Stopping agent loop."
-            )
+                # Execute each tool call
+                self._execute_tool_calls(tool_calls, cancel_token=cancel_token)
 
-        self._token_tracker.end_turn()
+                # Loop back: the model will see tool results and continue reasoning
+            else:
+                self._io.print_system(
+                    f"Reached maximum tool iterations ({self._config.max_tool_iterations}). "
+                    "Stopping agent loop."
+                )
+        except AgentCancelled as exc:
+            content = exc.partial_text
+            if content:
+                self._context.add_assistant_message(content + "\n\n[已被用户中断]", reasoning_content=exc.reasoning_content)
+            self._io.print_system("[已取消]")
+        finally:
+            esc_monitor.stop()
+            if hasattr(self, "_cancel_token"):
+                del self._cancel_token
+            if hasattr(self, "_esc_monitor"):
+                del self._esc_monitor
+            self._io.drain_input_buffer()
+            self._token_tracker.end_turn()
 
     # -- tool execution -----------------------------------------------------
 
@@ -908,7 +935,14 @@ class AgentRuntime:
             if self._config.needs_path_approval(path):
                 resolved_path = path.resolve()
                 approval_dir = resolved_path.parent if not resolved_path.is_dir() else resolved_path
-                if not self._confirm_path_access(tool_call, approval_dir):
+                esc_monitor = getattr(self, "_esc_monitor", None)
+                if esc_monitor is not None:
+                    with esc_monitor.paused():
+                        confirmed = self._confirm_path_access(tool_call, approval_dir)
+                else:
+                    confirmed = self._confirm_path_access(tool_call, approval_dir)
+
+                if not confirmed:
                     self._io.print_error("Permission denied: Path access denied by user")
                     self._context.add_tool_result(
                         tool_call.tool_name,
@@ -937,7 +971,14 @@ class AgentRuntime:
                 and self._config.allow_dangerous_operations == DangerousMode.ASK)
         )
         if needs_confirm:
-            if not self._confirm_dangerous_operation(tool_call):
+            esc_monitor = getattr(self, "_esc_monitor", None)
+            if esc_monitor is not None:
+                with esc_monitor.paused():
+                    confirmed = self._confirm_dangerous_operation(tool_call)
+            else:
+                confirmed = self._confirm_dangerous_operation(tool_call)
+
+            if not confirmed:
                 self._io.print_error("Operation cancelled by user.")
                 self._context.add_tool_result(
                     tool_call.tool_name,
@@ -953,19 +994,47 @@ class AgentRuntime:
 
     # -- parallel execution -------------------------------------------------
 
-    def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> None:
+    def _execute_tool_calls(self, tool_calls: list[ToolCall], cancel_token: CancellationToken | None = None) -> None:
         """Execute a batch of tool calls, parallelising consecutive READONLY ones."""
-        if not self._config.parallel_tool_execution or len(tool_calls) <= 1:
+        if cancel_token is not None and cancel_token.cancelled:
             for tc in tool_calls:
+                self._context.add_tool_result(
+                    tc.tool_name, ToolResult(False, "", "Cancelled by user"), tool_call_id=tc.id,
+                )
+            raise AgentCancelled()
+
+        if not self._config.parallel_tool_execution or len(tool_calls) <= 1:
+            for idx, tc in enumerate(tool_calls):
+                if cancel_token is not None and cancel_token.cancelled:
+                    for remaining in tool_calls[idx:]:
+                        self._context.add_tool_result(
+                            remaining.tool_name, ToolResult(False, "", "Cancelled by user"), tool_call_id=remaining.id,
+                        )
+                    raise AgentCancelled()
                 self._execute_tool(tc)
             return
 
         groups = group_tool_calls(tool_calls, self._registry)
-        for group in groups:
+        for g_idx, group in enumerate(groups):
+            if cancel_token is not None and cancel_token.cancelled:
+                for rem_group in groups[g_idx:]:
+                    for remaining in rem_group.tool_calls:
+                        self._context.add_tool_result(
+                            remaining.tool_name, ToolResult(False, "", "Cancelled by user"), tool_call_id=remaining.id,
+                        )
+                raise AgentCancelled()
+
             if group.parallel and len(group.tool_calls) > 1:
                 self._execute_parallel_batch(group.tool_calls)
             else:
                 for tc in group.tool_calls:
+                    if cancel_token is not None and cancel_token.cancelled:
+                        start_idx = tool_calls.index(tc)
+                        for remaining in tool_calls[start_idx:]:
+                            self._context.add_tool_result(
+                                remaining.tool_name, ToolResult(False, "", "Cancelled by user"), tool_call_id=remaining.id,
+                            )
+                        raise AgentCancelled()
                     self._execute_tool(tc)
 
     def _execute_parallel_batch(self, tool_calls: list[ToolCall]) -> None:
@@ -996,7 +1065,14 @@ class AgentRuntime:
                 if self._config.needs_path_approval(path):
                     resolved_path = path.resolve()
                     approval_dir = resolved_path.parent if not resolved_path.is_dir() else resolved_path
-                    if not self._confirm_path_access(tc, approval_dir):
+                    esc_monitor = getattr(self, "_esc_monitor", None)
+                    if esc_monitor is not None:
+                        with esc_monitor.paused():
+                            confirmed = self._confirm_path_access(tc, approval_dir)
+                    else:
+                        confirmed = self._confirm_path_access(tc, approval_dir)
+
+                    if not confirmed:
                         self._io.print_error("Permission denied: Path access denied by user")
                         self._context.add_tool_result(
                             tc.tool_name,
@@ -1069,16 +1145,35 @@ class AgentRuntime:
 
 
     def _consume_stream(
-        self, stream_gen: Generator[str | StreamChunk, None, ModelResponse]
+        self, stream_gen: Generator[str | StreamChunk, None, ModelResponse],
+        cancel_token: CancellationToken | None = None
     ) -> ModelResponse:
         """Iterate a streaming generator, writing tokens to output in real time."""
         in_thinking = False
         has_text = False
         show_thinking = self._config.show_thinking
+        text_parts: list[str] = []
+        thinking_parts: list[str] = []
         try:
             while True:
+                if cancel_token is not None and cancel_token.cancelled:
+                    try:
+                        stream_gen.close()
+                    except Exception:
+                        pass
+                    if in_thinking:
+                        self._io.print_thinking_end()
+                        in_thinking = False
+                    if has_text:
+                        self._io.print_stream_end()
+                    raise AgentCancelled(
+                        partial_text="".join(text_parts),
+                        reasoning_content="".join(thinking_parts)
+                    )
+
                 token = next(stream_gen)
                 if isinstance(token, StreamChunk) and token.chunk_type == "thinking":
+                    thinking_parts.append(token.text)
                     if show_thinking:
                         if not in_thinking:
                             self._io.print_thinking_start()
@@ -1089,6 +1184,7 @@ class AgentRuntime:
                         self._io.print_thinking_end()
                         in_thinking = False
                     text = token.text if isinstance(token, StreamChunk) else token
+                    text_parts.append(text)
                     self._io.print_stream(text)
                     has_text = True
         except StopIteration as e:
