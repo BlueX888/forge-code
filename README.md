@@ -27,7 +27,7 @@ ForgeCode 按职责拆分为几个模块：
 需要 Python 3.10 或更高版本。
 
 ```bash
-git clone https://github.com/your-username/forge-code.git
+git clone https://github.com/BlueX888/forge-code.git
 cd forge-code
 
 pip install -e ".[openai,anthropic]"
