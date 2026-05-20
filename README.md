@@ -66,15 +66,61 @@ pip install .[openai]      # 使用 OpenAI / DeepSeek 等
 pip install .[anthropic]   # 使用 Claude 3.5 Sonnet 等
 ```
 
-### 2. 配置 API Key
+### 2. 运行智能体（双模式启动）
 
-您可以将 API Key 设置为环境变量，或者通过命令行直接传入。
+ForgeCode 支持两种启动方式：**📺 交互式 TUI 面板启动** 与 **⚡ 命令行参数直接启动**。
+
+#### 方式 A：📺 交互式 TUI 启动面板与配置向导（推荐，无参数启动）
+
+如果您在终端中直接输入 `forge-code`（不带任何参数），系统会自动进入精美的 **CRT 复古风格 TUI 启动面板**：
+
+```bash
+forge-code
+```
+
+在该交互式面板中，您可以执行以下操作：
+1. **🚀 启动标准会话**：开启一个不保存历史记录的一次性编码会话。
+2. **💾 启动持久化会话**：开启一个自动保存历史的编码会话（支持后续随时恢复）。
+3. **🔄 恢复最近一次会话**：免去重新向 AI 描述背景，一键无缝接着写代码。
+4. **📂 管理与加载历史会话**：查看已保存的历史会话列表，或删除无用的历史会话。
+5. **⚙️ 配置 API 提供商与模型**：**内置交互式配置向导！** 会提示您选择提供商（OpenAI 兼容 / Anthropic）、推荐的模型、并**隐式输入您的 API Key** 及 Base URL，最后供您选择是保存到当前项目的本地配置（`.forgecode.toml`）还是全局用户配置（`~/.forgecode/config.toml`）。
+6. **❌ 退出程序**。
+
+---
+
+#### 方式 B：⚡ 命令行直接启动与配置自动保存
+
+如果您希望绕过 TUI 面板，或者在自动化脚本中运行，只需提供对应的命令行参数即可：
+
+```bash
+# 启动智能体，指定工作目录为当前目录，并采取安全询问模式 (ask)
+forge-code --model deepseek-chat --api-key sk-xxxx
+
+# 如果您完全信任智能体，希望其全自主无确认地运行：
+forge-code --allow-dangerous --model deepseek-chat --api-key sk-xxxx
+```
+
+> [!TIP]
+> **配置自动保存特性**
+> 
+> 当您在命令行使用 `--model`、`--provider`、`--api-key`、`--base-url` 传入参数启动时，ForgeCode 会**自动将这些配置永久保存**到当前项目根目录的 `.forgecode.toml` 中。
+> 后续您只需直接运行 `forge-code` 就可以在 TUI 面板中直接加载和使用它们，无需每次输入！
+
+---
+
+## 🔌 其它配置与运行真实大模型方式
+
+除了使用交互式 TUI 配置向导，您也可以灵活地通过 **环境变量** 或 **手动编写配置文件** 来让智能体接入真实的 AI 大模型。
+
+### 1. 使用环境变量配置
+
+您可以在启动前通过命令行设置对应提供商的环境变量：
 
 **OpenAI / 兼容提供商 (例如 DeepSeek):**
 ```bash
 export OPENAI_API_KEY="your-api-key"
-# 如需使用非官方 OpenAI 节点（例如 DeepSeek API）：
-export OPENAI_BASE_URL="https://api.deepseek.com"
+# 如需使用第三方 OpenAI 兼容端（例如 DeepSeek API）：
+export OPENAI_BASE_URL="https://api.deepseek.com/v1"
 ```
 
 **Anthropic (Claude):**
@@ -82,47 +128,9 @@ export OPENAI_BASE_URL="https://api.deepseek.com"
 export ANTHROPIC_API_KEY="your-api-key"
 ```
 
-### 3. 运行智能体
+### 2. 手动创建本地/全局配置文件（推荐）
 
-在您的项目工作目录下直接启动 ForgeCode：
-
-```bash
-# 启动智能体，默认会在当前目录运行并采取安全询问模式 (ask)
-forge-code
-
-# 如果您完全信任智能体，希望其全自主运行：
-forge-code --allow-dangerous
-```
-
-> [!NOTE]
-> **关于默认的“占位模型 (Placeholder)”模式**
-> 
-> 为了确保您在没有配置任何 API Key 或处于离线状态时也能正常运行项目，ForgeCode 默认会以 **Placeholder (占位模型)** 启动。
-> * **功能定位**：仅用于本地离线调试与工具链验证，不消耗任何 Token 或费用。
-> * **使用方法**：在此模式下，您可以输入 `/read <file_path>`、`/ls [dir_path]` 或 `/pwd` 来触发模拟的工具调用，观察智能体底层的调用流；输入其他任何内容均会进行 Echo 回显并给予提示。
-> * **运行真实大模型**：如果您需要连接真实的 AI 大模型，请指定 `--model` 参数或通过配置文件（`.forgecode.toml`）进行配置，具体方法请参考下文的 **[配置与运行真实大模型](#-配置与运行真实大模型)**。
-
----
-
-## 🔌 配置与运行真实大模型
-
-您可以非常灵活地通过 **环境变量**、**命令行参数** 或 **配置文件** 来切换至真实的 AI 大模型。
-
-### 方式 A：通过命令行参数直接运行
-
-您可以直接在启动时传递模型名称、服务提供商及 API Key：
-
-```bash
-# 运行 OpenAI / 兼容模型 (如 DeepSeek, 默认 provider 为 openai)
-forge-code --model deepseek-chat --api-key sk-xxxx --base-url https://api.deepseek.com/v1
-
-# 运行 Anthropic Claude 模型
-forge-code --provider anthropic --model claude-3-5-sonnet-20241022 --api-key sk-ant-xxxx
-```
-
-### 方式 B：通过本地配置文件运行（推荐）
-
-在您的项目根目录下（或全局家目录 `~/.forgecode/` 下）创建配置文件 `.forgecode.toml`，ForgeCode 启动时会自动加载它：
+您可以在当前项目根目录下（或全局用户目录 `~/.forgecode/config.toml` 下）创建配置文件 `.forgecode.toml`。ForgeCode 启动时会自动加载并合并它（项目配置覆盖全局配置）：
 
 ```toml
 [model]
@@ -138,7 +146,17 @@ base_url = "https://api.deepseek.com/v1"
 # api_key = "your-anthropic-api-key"
 ```
 
-配置完成后，您只需直接在终端运行 `forge-code` 即可，系统将自动识别并加载您配置的真实 AI 模型。
+配置完成后，您只需在终端输入 `forge-code`，在 TUI 启动面板中直接选择选项 `1` 或 `2`，系统将自动识别并加载您配置的真实 AI 模型。
+
+---
+
+> [!NOTE]
+> **关于默认的“占位模型 (Placeholder)”模式**
+> 
+> 如果您第一次启动项目，且未配置任何 API Key 或处于离线状态时，您可以通过 TUI 面板启动默认的 **Placeholder (占位模型)**。
+> * **功能定位**：仅用于本地离线调试与工具链验证，不消耗任何 Token 或费用。
+> * **使用方法**：在此模式下，您可以输入 `/read <file_path>`、`/ls [dir_path]` 或 `/pwd` 来触发模拟的工具调用，观察智能体底层的调用流；输入其他任何内容均会进行 Echo 回显并给予提示。
+
 
 
 ---
