@@ -146,6 +146,27 @@ def main(argv: list[str] | None = None) -> None:
     permissions = PermissionChecker(config, extra_rules=[make_command_rule(command_policy)])
     io = AgentIO()
 
+    # Automatically save CLI API flags permanently to .forgecode.toml
+    has_api_cli_flags = (
+        args.model is not None or
+        args.provider is not None or
+        args.api_key is not None or
+        args.base_url is not None
+    )
+    if has_api_cli_flags:
+        from coding_agent.launcher import save_cli_config_permanently
+        try:
+            save_cli_config_permanently(
+                working_dir,
+                model=args.model,
+                provider=args.provider,
+                api_key=args.api_key,
+                base_url=args.base_url,
+            )
+            io.print_system(f"Automatically saved configuration permanently to {working_dir / '.forgecode.toml'}")
+        except Exception as exc:
+            io.print_error(f"Failed to auto-save configuration permanently: {exc}")
+
     # -- Session setup ---------------------------------------------------
     from coding_agent.session import SessionManager, SessionData
 
@@ -153,56 +174,79 @@ def main(argv: list[str] | None = None) -> None:
     session_manager: SessionManager | None = None
     session: SessionData | None = None
 
-    if args.list_sessions or args.delete_session or args.session is not None or args.resume:
-        session_manager = SessionManager(session_dir)
+    is_interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    has_bypass_arg = (
+        args.prompt_file is not None or
+        args.session is not None or
+        args.resume or
+        args.list_sessions or
+        args.delete_session is not None or
+        args.model is not None or
+        args.provider is not None or
+        args.api_key is not None or
+        args.base_url is not None
+    )
 
-    if args.list_sessions:
-        sessions = session_manager.list_sessions()  # type: ignore[union-attr]
-        if not sessions:
-            io.print_system("No saved sessions.")
-        else:
-            for meta in sessions:
-                title = meta.title or "(untitled)"
-                io.print_system(
-                    f"  {meta.session_id}  {title}  "
-                    f"(updated: {meta.updated_at})"
+    if is_interactive and not has_bypass_arg:
+        from coding_agent.launcher import run_launcher
+        config, session, session_manager, should_exit = run_launcher(
+            working_dir,
+            session_dir,
+            cli_dangerous_mode=cli_dangerous_mode,
+        )
+        if should_exit:
+            return
+    else:
+        if args.list_sessions or args.delete_session or args.session is not None or args.resume:
+            session_manager = SessionManager(session_dir)
+
+        if args.list_sessions:
+            sessions = session_manager.list_sessions()  # type: ignore[union-attr]
+            if not sessions:
+                io.print_system("No saved sessions.")
+            else:
+                for meta in sessions:
+                    title = meta.title or "(untitled)"
+                    io.print_system(
+                        f"  {meta.session_id}  {title}  "
+                        f"(updated: {meta.updated_at})"
+                    )
+            return
+
+        if args.delete_session:
+            deleted = session_manager.delete(args.delete_session)  # type: ignore[union-attr]
+            if deleted:
+                io.print_system(f"Deleted session: {args.delete_session}")
+            else:
+                io.print_error(f"Session not found: {args.delete_session}")
+            return
+
+        if args.resume:
+            session = session_manager.load_latest()  # type: ignore[union-attr]
+            if session is None:
+                io.print_error("No sessions to resume.")
+                sys.exit(1)
+            io.print_system(f"Resuming session: {session.metadata.session_id}")
+        elif args.session is not None:
+            if args.session == "":
+                # No ID given: create new session
+                session = session_manager.create_session(  # type: ignore[union-attr]
+                    model_name=config.model_name,
+                    provider=config.provider,
+                    working_directory=str(working_dir),
                 )
-        return
-
-    if args.delete_session:
-        deleted = session_manager.delete(args.delete_session)  # type: ignore[union-attr]
-        if deleted:
-            io.print_system(f"Deleted session: {args.delete_session}")
-        else:
-            io.print_error(f"Session not found: {args.delete_session}")
-        return
-
-    if args.resume:
-        session = session_manager.load_latest()  # type: ignore[union-attr]
-        if session is None:
-            io.print_error("No sessions to resume.")
-            sys.exit(1)
-        io.print_system(f"Resuming session: {session.metadata.session_id}")
-    elif args.session is not None:
-        if args.session == "":
-            # No ID given: create new session
-            session = session_manager.create_session(  # type: ignore[union-attr]
-                model_name=config.model_name,
-                provider=config.provider,
-                working_directory=str(working_dir),
-            )
-            io.print_system(f"New session: {session.metadata.session_id}")
-        else:
-            # ID given: resume
-            try:
-                session = session_manager.load(args.session)  # type: ignore[union-attr]
-                io.print_system(f"Resuming session: {session.metadata.session_id}")
-            except FileNotFoundError:
-                io.print_error(f"Session not found: {args.session}")
-                sys.exit(1)
-            except ValueError as exc:
-                io.print_error(f"Corrupt session file: {exc}")
-                sys.exit(1)
+                io.print_system(f"New session: {session.metadata.session_id}")
+            else:
+                # ID given: resume
+                try:
+                    session = session_manager.load(args.session)  # type: ignore[union-attr]
+                    io.print_system(f"Resuming session: {session.metadata.session_id}")
+                except FileNotFoundError:
+                    io.print_error(f"Session not found: {args.session}")
+                    sys.exit(1)
+                except ValueError as exc:
+                    io.print_error(f"Corrupt session file: {exc}")
+                    sys.exit(1)
 
     if config.model_name != "placeholder":
         if config.provider == "anthropic":
