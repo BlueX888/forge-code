@@ -796,14 +796,18 @@ class AgentRuntime:
 
             # Check for streaming support
             stream_method = getattr(self._model, "complete_stream", None)
-            if stream_method is not None:
-                try:
-                    response = self._consume_stream(stream_method(messages, tools))
-                except Exception:
+            try:
+                if stream_method is not None:
+                    try:
+                        response = self._consume_stream(stream_method(messages, tools))
+                    except Exception:
+                        response = self._model.complete(messages, tools)
+                        stream_method = None  # treat as non-streaming after fallback
+                else:
                     response = self._model.complete(messages, tools)
-                    stream_method = None  # treat as non-streaming after fallback
-            else:
-                response = self._model.complete(messages, tools)
+            except Exception as exc:
+                self._io.print_error(f"API Error: {exc}")
+                break
 
             # Record token usage
             if response.input_tokens is not None:

@@ -123,10 +123,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if not is_admin_cmd:
         from main.config import (
-            has_project_model_config,
-            save_project_model_config,
+            has_effective_model_config,
+            save_global_model_config,
         )
-        if not has_project_model_config(working_dir):
+        if not has_effective_model_config(working_dir):
             if not (args.model and args.api_key and args.base_url):
                 io = AgentIO()
                 io.print_error(
@@ -134,8 +134,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
                 sys.exit(1)
             else:
-                save_project_model_config(
-                    working_dir,
+                save_global_model_config(
                     name=args.model,
                     provider=args.provider or "openai",
                     api_key=args.api_key,
@@ -143,8 +142,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
         else:
             if args.model or args.api_key or args.base_url or args.provider:
-                save_project_model_config(
-                    working_dir,
+                save_global_model_config(
                     name=args.model,
                     provider=args.provider,
                     api_key=args.api_key,

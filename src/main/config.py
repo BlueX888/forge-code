@@ -31,18 +31,125 @@ def _load_toml(path: Path) -> dict:
         return {}
 
 
+def global_config_path() -> Path:
+    """Return the Path to the global configuration file."""
+    return _GLOBAL_CONFIG_PATH
+
+
+def has_global_model_config() -> bool:
+    """Check if the global config has a valid model configuration."""
+    path = global_config_path()
+    if not path.is_file():
+        return False
+    cfg = _load_toml(path)
+    model = cfg.get("model", {})
+    if not isinstance(model, dict):
+        return False
+    return bool(
+        model.get("name")
+        and model.get("api_key")
+        and model.get("base_url")
+    )
+
+
+def has_effective_model_config(working_directory: Path) -> bool:
+    """Check if there is an effective model configuration (global or project fallback)."""
+    return has_global_model_config() or has_project_model_config(working_directory)
+
+
+def save_global_model_config(
+    *,
+    name: str | None = None,
+    provider: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> None:
+    """Save or update the global model configuration in ~/.forgecode/config.toml."""
+    path = global_config_path()
+    cfg = _load_toml(path)
+    
+    if "model" not in cfg or not isinstance(cfg["model"], dict):
+        cfg["model"] = {}
+        
+    if name is not None:
+        cfg["model"]["name"] = name
+    if provider is not None:
+        cfg["model"]["provider"] = provider
+    if api_key is not None:
+        cfg["model"]["api_key"] = api_key
+    if base_url is not None:
+        cfg["model"]["base_url"] = base_url
+        
+    content = _serialize_toml(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def migrate_project_model_config_to_global(working_directory: Path) -> None:
+    """Migrate a project's model config to global if global has no valid model config and project has one."""
+    if not has_global_model_config() and has_project_model_config(working_directory):
+        project_cfg = _load_toml(project_config_path(working_directory))
+        model_cfg = project_cfg.get("model", {})
+        save_global_model_config(
+            name=model_cfg.get("name"),
+            provider=model_cfg.get("provider"),
+            api_key=model_cfg.get("api_key"),
+            base_url=model_cfg.get("base_url"),
+        )
+
+
 def load_config_file(working_directory: Path) -> dict:
-    """Merge global + project config files. Project values win."""
+    """Merge global + project config files.
+    
+    Rules:
+    - For general sections (e.g. [agent], [commands]): global default, project overrides global.
+    - For [model]: global model config has priority over legacy project config.
+    - If global has no complete model config, but project does, we automatically migrate the project's model config to global, then load.
+    """
+    # 1. Automatic migration from project model config to global if applicable
+    if not has_global_model_config() and has_project_model_config(working_directory):
+        migrate_project_model_config_to_global(working_directory)
+
     global_cfg = _load_toml(_GLOBAL_CONFIG_PATH)
     project_cfg = _load_toml(working_directory / _PROJECT_CONFIG_NAME)
 
     merged: dict = {}
+    
+    # 2. General config merging (global + project, project wins)
     for cfg in (global_cfg, project_cfg):
         for section_key, section_val in cfg.items():
+            if section_key == "model":
+                continue
             if isinstance(section_val, dict):
                 merged.setdefault(section_key, {}).update(section_val)
             else:
                 merged[section_key] = section_val
+
+    # 3. Model config merging
+    global_model = global_cfg.get("model", {})
+    project_model = project_cfg.get("model", {})
+
+    def is_complete(m: dict) -> bool:
+        return bool(
+            isinstance(m, dict)
+            and m.get("name")
+            and m.get("api_key")
+            and m.get("base_url")
+        )
+
+    if is_complete(global_model):
+        merged["model"] = global_model
+    elif is_complete(project_model):
+        merged["model"] = project_model
+    else:
+        # Fallback/partial merge: start with project_model, override with global_model
+        m = {}
+        if isinstance(project_model, dict):
+            m.update(project_model)
+        if isinstance(global_model, dict):
+            m.update(global_model)
+        merged["model"] = m
+
     return merged
 
 

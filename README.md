@@ -41,7 +41,7 @@ pip install -e ".[dev]"
 
 ## 快速开始
 
-首次运行需要提供模型配置，ForgeCode 会在当前项目下生成 `.forgecode.toml`。该文件已加入 `.gitignore`。
+首次运行需要提供模型配置，ForgeCode 会写入全局配置 `~/.forgecode/config.toml`。后续在任何目录直接运行均默认沿用同一份配置。
 
 ```bash
 forge-code --model deepseek-chat --api-key sk-xxx --base-url https://api.deepseek.com/v1
@@ -53,7 +53,7 @@ Anthropic 示例：
 forge-code --provider anthropic --model claude-3-5-sonnet-20241022 --api-key sk-xxx --base-url https://api.anthropic.com
 ```
 
-之后在同一项目中直接运行：
+之后在任何目录直接运行：
 
 ```bash
 forge-code
@@ -98,7 +98,7 @@ forge-code --help
 
 ## 配置文件
 
-项目配置文件示例：
+### 全局配置文件示例 (`~/.forgecode/config.toml`)：
 
 ```toml
 [model]
@@ -113,7 +113,21 @@ show_thinking = true
 thinking_budget = 10000
 ```
 
-也可以在全局配置 `~/.forgecode/config.toml` 中保存默认配置。项目配置优先级更高。
+### 项目配置文件示例 (`.forgecode.toml`)：
+
+```toml
+[agent]
+dangerous_mode = "ask"
+show_thinking = true
+thinking_budget = 10000
+```
+
+### 配置优先级与分层规则：
+
+1. **CLI 参数优先**：`--model` / `--provider` / `--api-key` / `--base-url`
+2. **全局模型配置其次**：`~/.forgecode/config.toml` 中的 `[model]`
+3. **旧项目模型配置兜底**：`.forgecode.toml` 中的 `[model]` (仅作兼容保留，第一次运行会自动将其迁移到全局配置)
+4. **项目专属配置**：项目目录下的 `.forgecode.toml` 仍被读取用于配置 `[agent]`、`[commands]` 等参数，实现按项目独立控制权限、安全级别及自定义工具。
 
 ## 开发
 
