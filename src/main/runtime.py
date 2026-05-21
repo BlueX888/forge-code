@@ -811,64 +811,14 @@ class AgentRuntime:
         self._auto_save()
 
     def _process_pending_compaction(self) -> None:
-        """Check if the deque head is a compaction message and process it.
-
-        When a compaction message is found, it means a previous overflow check
-        decided compaction was needed.  We call the LLM summarizer to produce
-        the summary, inject it into history, and continue.
-        """
-        if not self._context._history:
-            return
-        first = self._context._history[0]
-        if first.role != "compaction":
-            return
-
-        # We have a pending compaction — delegate to the window manager
+        """Check and process deferred compaction before the next turn."""
         wm = self._context._window_manager
         if wm is None:
-            # No window manager, just remove the compaction message
-            self._context._history.popleft()
             return
-
-        summarize_fn = getattr(wm, "_summarize_fn", None)
-        if summarize_fn is None:
-            self._context._history.popleft()
-            return
-
-        # Run compaction
-        from main.compaction import Compactor
-        compactor = Compactor(
-            compaction_buffer=self._config.compaction_buffer_tokens,
-            tail_budget_ratio=self._config.tail_budget_ratio,
-            tail_clamp_min=self._config.tail_clamp_min,
-            tail_clamp_max=self._config.tail_clamp_max,
-            tail_min_turns=self._config.tail_min_turns,
-            tool_output_max_chars=self._config.tool_output_max_chars,
-        )
-
-        result = compactor.compact(
+        wm.process_pending_compaction(
             self._context._history,
-            self._config.max_context_tokens,
-            summarize_fn,
+            self._context._replace_history,
         )
-
-        if result["status"] != "continue":
-            # Compaction failed or wasn't needed — remove the marker
-            if self._context._history and self._context._history[0].role == "compaction":
-                self._context._history.popleft()
-            return
-
-        # Inject the summary
-        Compactor.inject_summary(
-            self._context._history,
-            result["summary"],
-            result["tail"],
-            overflow=False,
-        )
-
-        # Notify session persistence via on_replace
-        if self._context._on_replace is not None:
-            self._context._on_replace(list(self._context._history))
 
     def _run_agent_turn(self, user_input: str) -> None:
         """Execute one user turn: call the model in a loop until it stops using tools."""
