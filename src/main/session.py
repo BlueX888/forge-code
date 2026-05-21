@@ -31,6 +31,7 @@ class SessionMetadata:
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     turn_count: int = 0
+    last_context_used: int = 0
 
 
 @dataclasses.dataclass
@@ -39,6 +40,7 @@ class SessionData:
     messages: list[Message]
     context_messages: list[Message] | None = None
     resumed: bool = False
+    content_replacements: dict[str, str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +148,7 @@ class SessionManager:
                 if session.context_messages is not None
                 else None
             ),
+            "content_replacements": session.content_replacements,
         }
         target = self._dir / f"{session.metadata.session_id}.json"
         tmp = target.with_suffix(".tmp")
@@ -220,6 +223,7 @@ class SessionManager:
             total_input_tokens=meta.get("total_input_tokens", 0),
             total_output_tokens=meta.get("total_output_tokens", 0),
             turn_count=meta.get("turn_count", 0),
+            last_context_used=meta.get("last_context_used", 0),
         )
 
     @staticmethod
@@ -236,4 +240,5 @@ class SessionManager:
             metadata=meta,
             messages=messages,
             context_messages=context_messages,
+            content_replacements=raw.get("content_replacements"),
         )

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from safety.command_policy import CommandPolicy, make_command_rule
-from main.config import AgentConfig, DangerousMode
+from main.config import AgentConfig, DangerousMode, compute_session_dir
 from cli.io import AgentIO
 from safety.permissions import PermissionChecker
 from tools.builtin import register_builtin_tools
@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> None:
         "--session-dir",
         type=Path,
         default=None,
-        help="Session storage directory (default: {working_dir}/session).",
+        help="Session storage directory (default: ~/.forgecode/sessions/<hash>/sessions/).",
     )
     session_group.add_argument(
         "--no-session",
@@ -191,7 +191,7 @@ def main(argv: list[str] | None = None) -> None:
         io.print_error("Cannot use --no-session when specifying --resume or --session.")
         sys.exit(1)
 
-    session_dir = (args.session_dir or working_dir / "session").resolve()
+    session_dir = (args.session_dir or compute_session_dir(working_dir)).resolve()
     session_manager: SessionManager | None = None
     session: SessionData | None = None
 
@@ -218,6 +218,14 @@ def main(argv: list[str] | None = None) -> None:
         else:
             io.print_error(f"Session not found: {args.delete_session}")
         return
+
+    if not config.model_name or config.model_name == "placeholder":
+        io.print_error(
+            "Model name is not configured. Please specify a model name using "
+            "the '--model' command-line argument, or set 'name' under the "
+            "'[model]' section in your '.forgecode.toml' configuration file."
+        )
+        sys.exit(1)
 
     if not args.no_session:
         if args.resume:
@@ -262,14 +270,6 @@ def main(argv: list[str] | None = None) -> None:
                 working_directory=str(working_dir),
             )
             io.print_system(f"New session: {session.metadata.session_id}")
-
-    if not config.model_name or config.model_name == "placeholder":
-        io.print_error(
-            "Model name is not configured. Please specify a model name using "
-            "the '--model' command-line argument, or set 'name' under the "
-            "'[model]' section in your '.forgecode.toml' configuration file."
-        )
-        sys.exit(1)
 
     if config.provider == "anthropic":
         try:

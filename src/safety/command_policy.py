@@ -33,7 +33,7 @@ _SAFE_COMMANDS: frozenset[str] = frozenset({
     "grep", "egrep", "fgrep", "rg", "ag", "ack",
     "find", "fd", "locate", "which", "where", "whereis",
     # Text processing (read-only)
-    "sort", "uniq", "cut", "tr", "diff", "cmp", "comm", "awk", "jq", "yq",
+    "sort", "uniq", "cut", "tr", "diff", "cmp", "comm", "jq", "yq",
     # System info
     "pwd", "echo", "printf", "date", "cal", "whoami", "hostname",
     "uname", "arch", "id", "basename", "dirname", "realpath", "readlink",
@@ -104,6 +104,16 @@ class CommandPolicy:
         if not command:
             return CommandRiskLevel.SAFE
 
+        # Intercept compound/subshell/redirection/newline patterns to prevent command injection
+        if "\n" in command or "\r" in command:
+            return CommandRiskLevel.NEEDS_APPROVAL
+        if "<" in command or ">" in command:
+            return CommandRiskLevel.NEEDS_APPROVAL
+        if "$(" in command or "`" in command:
+            return CommandRiskLevel.NEEDS_APPROVAL
+        if re.search(r"(?<!&)&(?!&)", command):
+            return CommandRiskLevel.NEEDS_APPROVAL
+
         parts = _COMPOUND_SPLIT.split(command)
         for part in parts:
             part = part.strip()
@@ -143,6 +153,8 @@ class CommandPolicy:
     @staticmethod
     def _extract_base_command(token: str) -> str:
         """Extract the base command name, stripping path prefixes."""
+        if "/" in token or "\\" in token:
+            return token
         # Try POSIX path first, then Windows
         for path_cls in (PurePosixPath, PureWindowsPath):
             try:

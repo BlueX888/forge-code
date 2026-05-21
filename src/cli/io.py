@@ -92,7 +92,12 @@ class AgentIO:
     # -- helpers -------------------------------------------------------------
 
     def _write(self, text: str) -> None:
-        self._out.write(text)
+        try:
+            self._out.write(text)
+        except UnicodeEncodeError:
+            encoding = getattr(self._out, "encoding", None) or "utf-8"
+            encoded = text.encode(encoding, errors="replace")
+            self._out.write(encoded.decode(encoding))
         self._out.flush()
 
     def _c(self, code: str, text: str) -> str:

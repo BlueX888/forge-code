@@ -42,7 +42,8 @@ class ContextBuilder:
     ) -> None:
         self._config = config
         self._registry = registry
-        self._history: deque[Message] = deque(maxlen=config.max_history_messages)
+        self._history: deque[Message] = deque()
+        self._system_prompt_cache: str | None = None
         self._on_message = on_message
         self._on_replace = on_replace
         self._window_manager = window_manager
@@ -51,12 +52,24 @@ class ContextBuilder:
 
     def _append(self, msg: Message) -> None:
         self._history.append(msg)
+        self._prune_history_safely()
         if self._window_manager is not None:
             self._window_manager.notify_message_added(msg)
         if self._on_message is not None:
             self._on_message(msg)
 
+    def _prune_history_safely(self) -> None:
+        max_msgs = self._config.max_history_messages
+        while len(self._history) > max_msgs:
+            self._history.popleft()
+            while self._history:
+                left = self._history[0]
+                if left.role == "user" or (left.role == "assistant" and not left.tool_calls):
+                    break
+                self._history.popleft()
+
     def add_user_message(self, content: str) -> None:
+        self._system_prompt_cache = None
         self._append(Message(role="user", content=content))
 
     def add_assistant_message(self, content: str, tool_calls: list[ToolCall] | None = None, reasoning_content: str | None = None) -> None:
@@ -70,10 +83,13 @@ class ContextBuilder:
         if self._window_manager is not None:
             self._window_manager.after_add(self._history, self._replace_history)
 
-    def load_history(self, messages: list[Message]) -> None:
+    def load_history(self, messages: list[Message], content_replacements: dict[str, str] | None = None) -> None:
         """Load persisted messages into the deque without triggering the callback."""
+        self._system_prompt_cache = None
         for msg in messages:
             self._history.append(copy.deepcopy(msg))
+        if content_replacements and self._window_manager is not None:
+            self._window_manager.load_content_replacements(content_replacements)
 
     def history_snapshot(self) -> list[Message]:
         """Return a detached copy of the current model context history."""
@@ -81,6 +97,7 @@ class ContextBuilder:
 
     def _replace_history(self, messages: list[Message]) -> None:
         """Replace the entire history deque (used by Tier 4 compaction)."""
+        self._system_prompt_cache = None
         self._history.clear()
         for msg in messages:
             self._history.append(msg)
@@ -109,5 +126,7 @@ class ContextBuilder:
         return [system, *visible]
 
     def _build_system_prompt(self) -> str:
-        builder = SystemPromptBuilder(self._config, self._registry)
-        return builder.build()
+        if self._system_prompt_cache is None:
+            builder = SystemPromptBuilder(self._config, self._registry)
+            self._system_prompt_cache = builder.build()
+        return self._system_prompt_cache

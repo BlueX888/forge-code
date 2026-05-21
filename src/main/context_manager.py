@@ -90,7 +90,6 @@ class ContextWindowManager:
             tail_min_turns=config.tail_min_turns,
             tool_output_max_chars=config.tool_output_max_chars,
         )
-
         self._summarize_fn = summarize_fn
         self._max_context_tokens = config.max_context_tokens
         self._idle_timeout = config.context_idle_timeout
@@ -106,8 +105,7 @@ class ContextWindowManager:
         tool_call_id: str | None = None,
     ) -> str:
         """Apply Layer 1 truncation before content enters the deque."""
-        content = self._truncator.truncate(content, tool_name, tool_call_id)
-        return content
+        return self._truncator.truncate(content, tool_name, tool_call_id)
 
     # -- Layer 2 & 3: Pruning + Compaction (after message is added) ---------
 

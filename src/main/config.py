@@ -304,11 +304,19 @@ class AgentConfig:
     prune_minimum_tokens: int = 20_000
     # Layer 3: Compaction
     compaction_buffer_tokens: int = 20_000
+    # Layer 3: Compaction — trigger control
+    compaction_trigger_ratio: float = 0.95   # only compact when usage > 95% of capacity
+    compaction_timeout: int = 30              # timeout (seconds) for compaction LLM call
+    # API client timeouts
+    api_timeout: int = 120                    # HTTP read timeout for model API calls
+    api_connect_timeout: int = 15             # HTTP connect timeout for model API calls
     tail_budget_ratio: float = 0.25
     tail_clamp_min: int = 2_000
     tail_clamp_max: int = 8_000
     tail_min_turns: int = 2
     tool_output_max_chars: int = 2_000
+    default_max_result_chars: int = 50_000
+    tool_result_budget: dict[str, int] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_file_and_args(
@@ -381,6 +389,10 @@ class AgentConfig:
             prune_minimum_tokens=int(agent_section.get("prune_minimum_tokens", 20_000)),
             # Layer 3: Compaction
             compaction_buffer_tokens=int(agent_section.get("compaction_buffer_tokens", 20_000)),
+            compaction_trigger_ratio=float(agent_section.get("compaction_trigger_ratio", 0.95)),
+            compaction_timeout=int(agent_section.get("compaction_timeout", 30)),
+            api_timeout=int(agent_section.get("api_timeout", 120)),
+            api_connect_timeout=int(agent_section.get("api_connect_timeout", 15)),
             tail_budget_ratio=float(agent_section.get("tail_budget_ratio", 0.25)),
             tail_clamp_min=int(agent_section.get("tail_clamp_min", 2_000)),
             tail_clamp_max=int(agent_section.get("tail_clamp_max", 8_000)),
@@ -431,3 +443,10 @@ class AgentConfig:
             resolved == root or resolved.is_relative_to(root)
             for root in allowed_roots
         )
+
+
+def compute_session_dir(working_directory: Path) -> Path:
+    """Compute project-isolated session directory: ~/.forgecode/sessions/{hash}/sessions/"""
+    project_hash = hashlib.sha256(str(working_directory).encode()).hexdigest()[:16]
+    return Path.home() / ".forgecode" / "sessions" / project_hash / "sessions"
+

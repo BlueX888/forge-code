@@ -50,10 +50,16 @@ def _rule_path_sandbox(req: PermissionRequest, cfg: AgentConfig) -> PermissionRe
 
 
 def _rule_deny_destructive(req: PermissionRequest, cfg: AgentConfig) -> PermissionResult | None:
-    """Block destructive ops when DangerousMode is DENY; abstain otherwise."""
+    """Block or require confirmation for destructive ops based on DangerousMode."""
     if req.safety_label == SafetyLabel.DESTRUCTIVE:
         if cfg.allow_dangerous_operations == DangerousMode.DENY:
             return PermissionResult(False, "Destructive operations are disabled")
+        if cfg.allow_dangerous_operations == DangerousMode.ASK:
+            return PermissionResult(
+                True,
+                "Destructive operation requires confirmation",
+                requires_confirmation=True,
+            )
     return None
 
 

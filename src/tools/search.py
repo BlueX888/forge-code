@@ -103,12 +103,15 @@ class SearchTool:
         self, pattern: str, base_dir: Path, config: AgentConfig,
     ) -> ToolResult:
         """Find files matching a glob pattern."""
+        def get_mtime(p: Path) -> float:
+            try:
+                return p.stat().st_mtime
+            except OSError:
+                return 0.0
+
         try:
-            matches = sorted(
-                base_dir.glob(pattern),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
+            matches = list(base_dir.glob(pattern))
+            matches.sort(key=get_mtime, reverse=True)
         except OSError as exc:
             return ToolResult(False, "", str(exc))
 

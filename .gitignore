@@ -27,7 +27,6 @@ share/python-wheels/
 MANIFEST
 
 # ForgeCode runtime dynamic data
-session/
 .env
 *.local.toml
 .forgecode.toml

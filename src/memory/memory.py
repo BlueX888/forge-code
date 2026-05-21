@@ -194,7 +194,14 @@ def load_memory_content(config: AgentConfig, filename: str) -> str:
     md = _memory_dir(config)
     if md is None:
         return ""
-    filepath = md / filename
+    try:
+        resolved_md = md.resolve()
+        filepath = (resolved_md / filename).resolve()
+        if not filepath.is_relative_to(resolved_md):
+            logger.warning("Blocked path traversal attempt in memory load: %s", filename)
+            return ""
+    except Exception:
+        return ""
     if not filepath.is_file():
         return ""
     try:
@@ -354,13 +361,16 @@ def _do_memory_prefetch(query: str, config: AgentConfig, model_client: Any) -> s
     for filename in selected:
         content = load_memory_content(config, filename)
         if content:
-            filepath = md / filename
-            created_at: float | None = None
             try:
+                resolved_md = md.resolve()
+                filepath = (resolved_md / filename).resolve()
+                if not filepath.is_relative_to(resolved_md):
+                    continue
+                created_at: float | None = None
                 if filepath.exists():
                     created_at = filepath.stat().st_ctime
-            except OSError:
-                pass
+            except Exception:
+                continue
             memories.append({
                 "filename": filename,
                 "content": content,

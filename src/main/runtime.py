@@ -228,6 +228,7 @@ class AnthropicModelClient:
 
         text_parts: list[str] = []
         thinking_parts: list[str] = []
+        current_thinking_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         current_tool_call: ToolCall | None = None
         current_block_type: str | None = None
@@ -255,6 +256,7 @@ class AnthropicModelClient:
                     elif block.type == "thinking":
                         current_block_type = "thinking"
                         current_signature = ""
+                        current_thinking_parts = []
                     elif block.type == "text":
                         current_block_type = "text"
 
@@ -264,6 +266,7 @@ class AnthropicModelClient:
                         yield event.delta.text
                     elif event.delta.type == "thinking_delta":
                         thinking_parts.append(event.delta.thinking)
+                        current_thinking_parts.append(event.delta.thinking)
                         yield StreamChunk(text=event.delta.thinking, chunk_type="thinking")
                     elif event.delta.type == "signature_delta":
                         current_signature += event.delta.signature
@@ -273,7 +276,7 @@ class AnthropicModelClient:
                         tool_calls.append(current_tool_call)
                         current_tool_call = None
                     if current_block_type == "thinking":
-                        thinking_text = "".join(thinking_parts)
+                        thinking_text = "".join(current_thinking_parts)
                         new_thinking_blocks.append({
                             "type": "thinking",
                             "thinking": thinking_text,
@@ -710,7 +713,7 @@ class AgentRuntime:
                 else session.messages
             )
             if context_messages:
-                self._context.load_history(context_messages)
+                self._context.load_history(context_messages, content_replacements=session.content_replacements)
 
         # Token usage tracking
         self._token_tracker = TokenUsageTracker(config.max_context_tokens)
@@ -721,6 +724,7 @@ class AgentRuntime:
                 "session_input": session.metadata.total_input_tokens,
                 "session_output": session.metadata.total_output_tokens,
                 "turn_count": session.metadata.turn_count,
+                "last_context_used": session.metadata.last_context_used,
             })
 
     def run(self) -> None:
@@ -920,8 +924,7 @@ class AgentRuntime:
                     break
 
                 # Record token usage
-                if response.input_tokens is not None:
-                    self._token_tracker.record(response)
+                self._token_tracker.record(response)
 
                 # Update token anchor from API usage
                 if response.input_tokens is not None:
@@ -995,7 +998,12 @@ class AgentRuntime:
 
         # Single permission check (path sandbox + safety label + command policy)
         path_val = tool_call.arguments.get("path")
-        path = Path(path_val) if path_val else None
+        if path_val:
+            path = Path(path_val)
+            if not path.is_absolute():
+                path = self._config.working_directory / path
+        else:
+            path = None
 
         if path and hasattr(self._config, "needs_path_approval"):
             if self._config.needs_path_approval(path):
@@ -1125,7 +1133,12 @@ class AgentRuntime:
                 continue
 
             path_val = tc.arguments.get("path")
-            path = Path(path_val) if path_val else None
+            if path_val:
+                path = Path(path_val)
+                if not path.is_absolute():
+                    path = self._config.working_directory / path
+            else:
+                path = None
 
             if path and hasattr(self._config, "needs_path_approval"):
                 if self._config.needs_path_approval(path):
@@ -1166,19 +1179,17 @@ class AgentRuntime:
             return
 
         # Phase 2: execute in parallel -------------------------------------
-        futures: dict[str, concurrent.futures.Future[ToolResult]] = {}
+        futures: dict[int, concurrent.futures.Future[ToolResult]] = {}
         max_workers = min(len(prepared), 4)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             for tc, tool in prepared:
-                key = tc.id or tc.tool_name
-                futures[key] = pool.submit(
+                futures[id(tc)] = pool.submit(
                     tool.run, arguments=tc.arguments, config=self._config,
                 )
 
         # Phase 3: finalise in original order ------------------------------
         for tc, _tool in prepared:
-            key = tc.id or tc.tool_name
-            future = futures[key]
+            future = futures[id(tc)]
             try:
                 tool_result = future.result()
             except Exception as exc:
@@ -1281,7 +1292,10 @@ class AgentRuntime:
             self._session.metadata.total_input_tokens = self._token_tracker.session_input
             self._session.metadata.total_output_tokens = self._token_tracker.session_output
             self._session.metadata.turn_count = self._token_tracker.turn_count
+            self._session.metadata.last_context_used = self._token_tracker.context_used
             self._session.context_messages = self._context.history_snapshot()
+            if self._context._window_manager is not None:
+                self._session.content_replacements = self._context._window_manager.content_replacement_state
             try:
                 self._session_manager.save(self._session)
             except OSError as exc:

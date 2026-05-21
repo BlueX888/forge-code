@@ -153,6 +153,8 @@ class EditFileTool:
             content = target.read_text(encoding="utf-8")
         except FileNotFoundError:
             return ToolResult(False, "", f"File not found: {target}")
+        except ValueError as exc:
+            return ToolResult(False, "", f"Unable to read file: {exc} (file might be binary or has non-UTF-8 encoding)")
         except OSError as exc:
             return ToolResult(False, "", str(exc))
 
