@@ -90,10 +90,19 @@ class ContextWindowManager:
             tail_min_turns=config.tail_min_turns,
             tool_output_max_chars=config.tool_output_max_chars,
         )
-        self._summarize_fn = summarize_fn
+        if summarize_fn is not None:
+            self._summarize_fn = self._make_timeout_summarizer(
+                summarize_fn, config.compaction_timeout,
+            )
+        else:
+            self._summarize_fn = None
         self._max_context_tokens = config.max_context_tokens
         self._idle_timeout = config.context_idle_timeout
         self._last_activity: float = time.time()
+        self._trigger_ratio = config.compaction_trigger_ratio
+        self._compaction_timeout = config.compaction_timeout
+        # Deferred compaction state
+        self._compaction_pending: bool = False
 
     # -- Layer 1: Truncation (synchronous, every tool result) ---------------
 
@@ -114,44 +123,24 @@ class ContextWindowManager:
         history: deque[Message],
         replace_fn: Callable[[list[Message]], None],
     ) -> None:
-        """Apply Layer 2 pruning and trigger Layer 3 compaction if needed."""
+        """Apply Layer 2 pruning; defer Layer 3 compaction if overflow persists."""
         self._touch()
 
-        # Check whether we are overflowing
         ratio = self._budget.usage_ratio(history)
-        if ratio <= 0.85:
+        if ratio <= self._trigger_ratio:
             return
 
         # Layer 2: try pruning first (zero LLM cost)
         pruned = self._pruner.prune(history)
         if pruned:
-            # Re-check after pruning
             ratio = self._budget.usage_ratio(history)
-            if ratio <= 0.85:
+            if ratio <= self._trigger_ratio:
                 return
 
-        # Layer 3: semantic compaction
-        if self._summarize_fn is None:
-            return
-
-        result = self._compactor.compact(
-            history,
-            self._max_context_tokens,
-            self._summarize_fn,
-        )
-
-        if result["status"] != "continue":
-            return
-
-        summary = result["summary"]
-        tail = result["tail"]
-
-        # Inject the summary into history
-        from main.compaction import Compactor as CompactorCls
-        CompactorCls.inject_summary(history, summary, tail, overflow=False)
-
-        # Notify the runtime via replace callback
-        replace_fn(list(history))
+        # Layer 3: DEFER compaction — do NOT run synchronously here
+        # Previously this was a blocking LLM call that froze the CLI.
+        if self._summarize_fn is not None:
+            self._compaction_pending = True
 
     # -- idle compression ---------------------------------------------------
 
@@ -172,6 +161,59 @@ class ContextWindowManager:
     def invalidate_anchor(self) -> None:
         """No-op: anchor-based estimation is replaced by simple char estimation."""
         pass
+
+    # -- deferred compaction ------------------------------------------------
+
+    def process_pending_compaction(
+        self,
+        history: deque[Message],
+        replace_fn: Callable[[list[Message]], None],
+    ) -> bool:
+        """Process deferred compaction. Call this at the start of each turn.
+        Returns True if compaction ran and replaced history."""
+        if not self._compaction_pending:
+            return False
+
+        self._compaction_pending = False
+
+        if self._summarize_fn is None:
+            return False
+
+        # Re-check: maybe pruning already handled it during the interval
+        ratio = self._budget.usage_ratio(history)
+        if ratio <= self._trigger_ratio:
+            return False
+
+        result = self._compactor.compact(
+            history,
+            self._max_context_tokens,
+            self._summarize_fn,
+        )
+
+        if result["status"] != "continue":
+            return False
+
+        from main.compaction import Compactor as CompactorCls
+        CompactorCls.inject_summary(history, result["summary"], result["tail"], overflow=False)
+        replace_fn(list(history))
+        return True
+
+    @staticmethod
+    def _make_timeout_summarizer(
+        summarize_fn: SummarizeFn, timeout: int,
+    ) -> SummarizeFn:
+        """Wrap summarize_fn with a timeout. Returns None on timeout or failure."""
+        import concurrent.futures
+
+        def _with_timeout(text: str) -> str | None:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(summarize_fn, text)
+                try:
+                    return future.result(timeout=timeout)
+                except (concurrent.futures.TimeoutError, Exception):
+                    return None
+
+        return _with_timeout
 
     # -- helpers ------------------------------------------------------------
 
