@@ -669,7 +669,7 @@ class AgentRuntime:
         window_manager: ContextWindowManager | None = None
         on_replace = None
         if config.enable_context_management:
-            spill_dir = config.context_spill_dir or (config.working_directory / ".forgecode" / "context_spill")
+            session_id = session.metadata.session_id if session is not None else "no-session"
             summarize_fn: Callable[[str], str | None] | None = None
             if config.auto_compact_enabled and not isinstance(model_client, PlaceholderModelClient):
                 def _summarize(text: str) -> str | None:
@@ -681,7 +681,12 @@ class AgentRuntime:
                     except Exception:
                         return None
                 summarize_fn = _summarize
-            window_manager = ContextWindowManager(config, spill_dir, summarize_fn)
+            window_manager = ContextWindowManager(
+                config=config,
+                working_directory=config.working_directory,
+                session_id=session_id,
+                summarize_fn=summarize_fn,
+            )
 
         if session is not None:
             def _on_replace(messages: list[Message]) -> None:
@@ -786,13 +791,74 @@ class AgentRuntime:
         self._run_agent_turn(user_input)
         self._auto_save()
 
-    # -- agentic loop -------------------------------------------------------
+    def _process_pending_compaction(self) -> None:
+        """Check if the deque head is a compaction message and process it.
+
+        When a compaction message is found, it means a previous overflow check
+        decided compaction was needed.  We call the LLM summarizer to produce
+        the summary, inject it into history, and continue.
+        """
+        if not self._context._history:
+            return
+        first = self._context._history[0]
+        if first.role != "compaction":
+            return
+
+        # We have a pending compaction — delegate to the window manager
+        wm = self._context._window_manager
+        if wm is None:
+            # No window manager, just remove the compaction message
+            self._context._history.popleft()
+            return
+
+        summarize_fn = getattr(wm, "_summarize_fn", None)
+        if summarize_fn is None:
+            self._context._history.popleft()
+            return
+
+        # Run compaction
+        from main.compaction import Compactor
+        compactor = Compactor(
+            compaction_buffer=self._config.compaction_buffer_tokens,
+            tail_budget_ratio=self._config.tail_budget_ratio,
+            tail_clamp_min=self._config.tail_clamp_min,
+            tail_clamp_max=self._config.tail_clamp_max,
+            tail_min_turns=self._config.tail_min_turns,
+            tool_output_max_chars=self._config.tool_output_max_chars,
+        )
+
+        result = compactor.compact(
+            self._context._history,
+            self._config.max_context_tokens,
+            summarize_fn,
+        )
+
+        if result["status"] != "continue":
+            # Compaction failed or wasn't needed — remove the marker
+            if self._context._history and self._context._history[0].role == "compaction":
+                self._context._history.popleft()
+            return
+
+        # Inject the summary
+        Compactor.inject_summary(
+            self._context._history,
+            result["summary"],
+            result["tail"],
+            overflow=False,
+        )
+
+        # Notify session persistence via on_replace
+        if self._context._on_replace is not None:
+            self._context._on_replace(list(self._context._history))
 
     def _run_agent_turn(self, user_input: str) -> None:
         """Execute one user turn: call the model in a loop until it stops using tools."""
         # Auto-set session title from first user message
         if self._session is not None and not self._session.metadata.title:
             self._session.metadata.title = user_input[:50]
+
+        # Check for pending compaction message at deque head
+        self._process_pending_compaction()
 
         # Memory prefetch (background thread)
         memory_future = None

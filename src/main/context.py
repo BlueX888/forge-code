@@ -18,12 +18,14 @@ if TYPE_CHECKING:
 
 @dataclasses.dataclass
 class Message:
-    role: str  # "system" | "user" | "assistant" | "tool"
+    role: str  # "system" | "user" | "assistant" | "tool" | "compaction"
     content: str
     tool_calls: list[ToolCall] | None = None   # assistant messages with tool invocations
     tool_call_id: str | None = None            # tool result correlation id
     tool_name: str | None = None
     reasoning_content: str | None = None        # thinking/reasoning content (OpenAI-compatible APIs)
+    summary: bool = False                       # marks summary messages from compaction
+    compacted: bool = False                     # marks processed-by-pruning/compaction messages
 
 
 class ContextBuilder:
@@ -63,7 +65,7 @@ class ContextBuilder:
     def add_tool_result(self, tool_name: str, result: ToolResult, tool_call_id: str | None = None) -> None:
         content = result.output if result.success else f"Error: {result.error}"
         if self._window_manager is not None:
-            content = self._window_manager.process_before_add(content, tool_name, self._history)
+            content = self._window_manager.process_before_add(content, tool_name, self._history, tool_call_id=tool_call_id)
         self._append(Message(role="tool", content=content, tool_name=tool_name, tool_call_id=tool_call_id))
         if self._window_manager is not None:
             self._window_manager.after_add(self._history, self._replace_history)
@@ -100,9 +102,11 @@ class ContextBuilder:
     # -- builders -----------------------------------------------------------
 
     def build(self) -> list[Message]:
-        """Return ``[system_message, *history]``."""
+        """Return ``[system_message, *history]``, filtering out compaction messages."""
         system = Message(role="system", content=self._build_system_prompt())
-        return [system, *self._history]
+        # Filter out compaction messages — they are internal metadata, not API-visible
+        visible = [m for m in self._history if m.role != "compaction"]
+        return [system, *visible]
 
     def _build_system_prompt(self) -> str:
         builder = SystemPromptBuilder(self._config, self._registry)
