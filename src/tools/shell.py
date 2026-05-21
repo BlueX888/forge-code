@@ -98,13 +98,12 @@ class RunCommandTool:
 
         output = "\n".join(output_parts)
 
-        # Truncate if too large
+        # Truncate if too large — tail-based for shell output
         if len(output) > _MAX_OUTPUT:
-            half = _MAX_OUTPUT // 2
+            tail = output[-_MAX_OUTPUT:]
             output = (
-                output[:half]
-                + f"\n\n... [truncated {len(output) - _MAX_OUTPUT} bytes] ...\n\n"
-                + output[-half:]
+                f"[shell output truncated from {len(output):,} to {_MAX_OUTPUT:,} bytes]\n"
+                f"{tail}"
             )
 
         return ToolResult(result.returncode == 0, output, None if result.returncode == 0 else f"Exit code {result.returncode}")

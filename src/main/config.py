@@ -294,6 +294,21 @@ class AgentConfig:
     show_thinking: bool = True
     thinking_budget: int = 10_000
     banner_width: int = 80
+    # Layer 1: Truncation
+    truncate_line_threshold: int = 2_000
+    truncate_byte_threshold: int = 50_000
+    truncate_cleanup_interval: int = 3_600
+    truncate_max_age: int = 604_800
+    # Layer 2: Pruning
+    prune_protect_tokens: int = 40_000
+    prune_minimum_tokens: int = 20_000
+    # Layer 3: Compaction
+    compaction_buffer_tokens: int = 20_000
+    tail_budget_ratio: float = 0.25
+    tail_clamp_min: int = 2_000
+    tail_clamp_max: int = 8_000
+    tail_min_turns: int = 2
+    tool_output_max_chars: int = 2_000
 
     @classmethod
     def from_file_and_args(
@@ -320,6 +335,12 @@ class AgentConfig:
         extra_permitted = tuple(Path(p) for p in agent_section.get("permitted_directories", []))
         permitted_dirs = extra_permitted + ((memory_dir,) if memory_enabled else ())
 
+        spill_dir_raw = agent_section.get("context_spill_dir")
+        context_spill_dir = Path(spill_dir_raw) if spill_dir_raw is not None else None
+
+        default_max_result_chars = int(agent_section.get("default_max_result_chars", 50_000))
+        tool_result_budget = {k: int(v) for k, v in agent_section.get("tool_result_budget", {}).items()}
+
         return cls(
             working_directory=working_directory,
             model_name=cli_model or model_section.get("name"),
@@ -332,19 +353,39 @@ class AgentConfig:
                 agent_section.get("allow_dangerous"),
             ),
             max_history_messages=agent_section.get("max_history_messages", 50),
+            max_tool_iterations=agent_section.get("max_tool_iterations", 25),
             max_output_tokens=agent_section.get("max_output_tokens", 4096),
+            command_timeout=agent_section.get("command_timeout", 120),
+            permitted_directories=permitted_dirs,
             parallel_tool_execution=agent_section.get("parallel_tool_execution", True),
             extra_safe_commands=tuple(commands_section.get("safe", [])),
             max_context_tokens=cls._resolve_max_context_tokens(agent_section),
             enable_context_management=agent_section.get("enable_context_management", True),
             context_idle_timeout=agent_section.get("context_idle_timeout", 300),
+            context_spill_dir=context_spill_dir,
             auto_compact_enabled=agent_section.get("auto_compact_enabled", True),
             memory_enabled=memory_enabled,
             memory_dir=memory_dir,
-            permitted_directories=permitted_dirs,
             show_thinking=cli_show_thinking if cli_show_thinking is not None else agent_section.get("show_thinking", True),
             thinking_budget=cli_thinking_budget if cli_thinking_budget is not None else agent_section.get("thinking_budget", 10_000),
             banner_width=int(agent_section.get("banner_width", agent_section.get("width", 80))),
+            default_max_result_chars=default_max_result_chars,
+            tool_result_budget=tool_result_budget,
+            # Layer 1: Truncation
+            truncate_line_threshold=int(agent_section.get("truncate_line_threshold", 2_000)),
+            truncate_byte_threshold=int(agent_section.get("truncate_byte_threshold", 50_000)),
+            truncate_cleanup_interval=int(agent_section.get("truncate_cleanup_interval", 3_600)),
+            truncate_max_age=int(agent_section.get("truncate_max_age", 604_800)),
+            # Layer 2: Pruning
+            prune_protect_tokens=int(agent_section.get("prune_protect_tokens", 40_000)),
+            prune_minimum_tokens=int(agent_section.get("prune_minimum_tokens", 20_000)),
+            # Layer 3: Compaction
+            compaction_buffer_tokens=int(agent_section.get("compaction_buffer_tokens", 20_000)),
+            tail_budget_ratio=float(agent_section.get("tail_budget_ratio", 0.25)),
+            tail_clamp_min=int(agent_section.get("tail_clamp_min", 2_000)),
+            tail_clamp_max=int(agent_section.get("tail_clamp_max", 8_000)),
+            tail_min_turns=int(agent_section.get("tail_min_turns", 2)),
+            tool_output_max_chars=int(agent_section.get("tool_output_max_chars", 2_000)),
         )
 
     @staticmethod
