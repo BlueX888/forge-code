@@ -281,6 +281,8 @@ def main(argv: list[str] | None = None) -> None:
                 max_tokens=config.max_output_tokens,
                 show_thinking=config.show_thinking,
                 thinking_budget=config.thinking_budget,
+                timeout=config.api_timeout,
+                connect_timeout=config.api_connect_timeout,
             )
         except ImportError:
             io.print_error(
@@ -294,6 +296,8 @@ def main(argv: list[str] | None = None) -> None:
                 model=config.model_name,
                 api_key=config.api_key,
                 base_url=config.base_url,
+                timeout=config.api_timeout,
+                connect_timeout=config.api_connect_timeout,
             )
         except ImportError:
             io.print_error(

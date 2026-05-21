@@ -113,6 +113,8 @@ class AnthropicModelClient:
         max_tokens: int = 4096,
         show_thinking: bool = False,
         thinking_budget: int = 10_000,
+        timeout: float = 120.0,
+        connect_timeout: float = 15.0,
     ) -> None:
         import anthropic
         kwargs: dict[str, Any] = {}
@@ -120,6 +122,8 @@ class AnthropicModelClient:
             kwargs["api_key"] = api_key
         if base_url:
             kwargs["base_url"] = base_url
+        kwargs["timeout"] = timeout
+        kwargs["max_retries"] = 0
         self._client = anthropic.Anthropic(**kwargs)
         self._model = model
         self._show_thinking = show_thinking
@@ -385,13 +389,20 @@ class OpenAIModelClient:
         model: str,
         api_key: str | None = None,
         base_url: str | None = None,
+        timeout: float = 120.0,
+        connect_timeout: float = 15.0,
     ) -> None:
         from openai import OpenAI
+        import httpx
         kwargs: dict[str, Any] = {}
         if api_key:
             kwargs["api_key"] = api_key
         if base_url:
             kwargs["base_url"] = base_url
+        http_client = httpx.Client(
+            timeout=httpx.Timeout(timeout, connect=connect_timeout),
+        )
+        kwargs["http_client"] = http_client
         self._client = OpenAI(**kwargs)
         self._model = model
 
@@ -713,7 +724,7 @@ class AgentRuntime:
                 else session.messages
             )
             if context_messages:
-                self._context.load_history(context_messages, content_replacements=session.content_replacements)
+                self._context.load_history(context_messages)
 
         # Token usage tracking
         self._token_tracker = TokenUsageTracker(config.max_context_tokens)
@@ -1294,8 +1305,6 @@ class AgentRuntime:
             self._session.metadata.turn_count = self._token_tracker.turn_count
             self._session.metadata.last_context_used = self._token_tracker.context_used
             self._session.context_messages = self._context.history_snapshot()
-            if self._context._window_manager is not None:
-                self._session.content_replacements = self._context._window_manager.content_replacement_state
             try:
                 self._session_manager.save(self._session)
             except OSError as exc:
