@@ -117,13 +117,17 @@ class AnthropicModelClient:
         connect_timeout: float = 15.0,
     ) -> None:
         import anthropic
+        import httpx
+        http_client = httpx.Client(
+            timeout=httpx.Timeout(timeout, connect=connect_timeout),
+        )
         kwargs: dict[str, Any] = {}
         if api_key:
             kwargs["api_key"] = api_key
         if base_url:
             kwargs["base_url"] = base_url
-        kwargs["timeout"] = timeout
-        kwargs["max_retries"] = 0
+        kwargs["http_client"] = http_client
+        kwargs["max_retries"] = 0  # Prevent SDK retries that could freeze during connection issues
         self._client = anthropic.Anthropic(**kwargs)
         self._model = model
         self._show_thinking = show_thinking
