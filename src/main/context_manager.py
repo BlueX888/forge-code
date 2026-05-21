@@ -9,6 +9,7 @@ Replaces the previous 4-tier system with a progressive compression pipeline:
 
 from __future__ import annotations
 
+import concurrent.futures
 import time
 from collections import deque
 from pathlib import Path
@@ -100,7 +101,6 @@ class ContextWindowManager:
         self._idle_timeout = config.context_idle_timeout
         self._last_activity: float = time.time()
         self._trigger_ratio = config.compaction_trigger_ratio
-        self._compaction_timeout = config.compaction_timeout
         # Deferred compaction state
         self._compaction_pending: bool = False
 
@@ -203,15 +203,17 @@ class ContextWindowManager:
         summarize_fn: SummarizeFn, timeout: int,
     ) -> SummarizeFn:
         """Wrap summarize_fn with a timeout. Returns None on timeout or failure."""
-        import concurrent.futures
-
         def _with_timeout(text: str) -> str | None:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
                 future = pool.submit(summarize_fn, text)
-                try:
-                    return future.result(timeout=timeout)
-                except (concurrent.futures.TimeoutError, Exception):
-                    return None
+                return future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                return None
+            except Exception:
+                return None
+            finally:
+                pool.shutdown(wait=False)
 
         return _with_timeout
 
