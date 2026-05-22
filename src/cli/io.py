@@ -32,7 +32,7 @@ _PRIMARY_ARG_KEY: dict[str, str] = {
     "write_file": "path",
     "edit_file": "path",
     "list_directory": "path",
-    "search": "query",
+    "search": "pattern",
     "run_command": "command",
 }
 
@@ -384,7 +384,6 @@ class AgentIO:
         max_context: int,
     ) -> None:
         """Display a one-line token usage summary after each API call."""
-        turn_total = turn_input + turn_output
         ratio = context_used / max_context * 100 if max_context > 0 else 0
 
         # Color-code the context ratio
@@ -398,7 +397,6 @@ class AgentIO:
 
         line = (
             f"[Tokens] \u2191{turn_input:,} \u2193{turn_output:,} | "
-            f"Turn: {turn_total:,} | "
             f"Session: {session_total:,} | "
             f"Context: {context_used:,}/{max_context:,} ({ratio_str})"
         )

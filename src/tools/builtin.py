@@ -42,15 +42,20 @@ class ReadFileTool:
         return SafetyLabel.READONLY
 
     def run(self, *, arguments: dict[str, Any], config: AgentConfig) -> ToolResult:
-        raw_path = arguments.get("path", "")
+        raw_path = arguments.get("path", "").strip()
+        if not raw_path:
+            return ToolResult(False, "", "Path is empty. Provide a file path to read.")
         path = Path(raw_path) if Path(raw_path).is_absolute() else config.working_directory / raw_path
         path = path.resolve()
 
         if not config.is_path_allowed(path):
             return ToolResult(False, "", f"Path {path} is outside allowed directories")
 
+        if path.is_dir():
+            return ToolResult(False, "", f"'{path}' is a directory, not a file. Use list_directory to view its contents.")
+
         if not path.is_file():
-            return ToolResult(False, "", f"Not a file: {path}")
+            return ToolResult(False, "", f"File not found: {path}")
 
         offset = max(int(arguments.get("offset", 0)), 0)
         limit = min(max(int(arguments.get("limit", 200)), 1), 500)

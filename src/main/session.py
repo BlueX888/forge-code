@@ -71,6 +71,7 @@ def _message_to_dict(msg: Message) -> dict[str, Any]:
         "tool_call_id": msg.tool_call_id,
         "tool_name": msg.tool_name,
         "reasoning_content": msg.reasoning_content,
+        "thinking_blocks": msg.thinking_blocks,
         "summary": msg.summary,
         "compacted": msg.compacted,
     }
@@ -87,6 +88,7 @@ def _message_from_dict(d: dict[str, Any]) -> Message:
         tool_call_id=d.get("tool_call_id"),
         tool_name=d.get("tool_name"),
         reasoning_content=d.get("reasoning_content"),
+        thinking_blocks=d.get("thinking_blocks"),
         summary=d.get("summary", False),
         compacted=d.get("compacted", False),
     )

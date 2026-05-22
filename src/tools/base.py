@@ -39,6 +39,7 @@ class ModelResponse:
     tool_calls: list[ToolCall] = dataclasses.field(default_factory=list)
     stop_reason: str | None = None
     reasoning_content: str | None = None
+    thinking_blocks: list[dict[str, Any]] | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
 

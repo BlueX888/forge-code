@@ -277,8 +277,8 @@ class AgentConfig:
     provider: str = "openai"  # "openai" | "anthropic"
     api_key: str | None = None
     base_url: str | None = None
-    max_history_messages: int = 50
-    max_tool_iterations: int = 25
+    max_history_messages: int = 100
+    max_tool_iterations: int = 100
     max_output_tokens: int = 4096
     command_timeout: int = 120
     permitted_directories: tuple[Path, ...] = ()
@@ -301,7 +301,7 @@ class AgentConfig:
     truncate_max_age: int = 604_800
     # Layer 2: Pruning
     prune_protect_tokens: int = 40_000
-    prune_minimum_tokens: int = 20_000
+    prune_minimum_tokens: int = 10_000
     # Layer 3: Compaction
     compaction_buffer_tokens: int = 20_000
     # Layer 3: Compaction — trigger control
@@ -313,10 +313,18 @@ class AgentConfig:
     tail_budget_ratio: float = 0.25
     tail_clamp_min: int = 2_000
     tail_clamp_max: int = 8_000
-    tail_min_turns: int = 2
+    tail_min_turns: int = 5
     tool_output_max_chars: int = 2_000
     default_max_result_chars: int = 50_000
     tool_result_budget: dict[str, int] = dataclasses.field(default_factory=dict)
+    # Layer 3: Compaction — summarize call token budget
+    compaction_max_output_tokens: int = 16_000  # dedicated output cap for summarize LLM calls
+    # Layer 2: Pruning — tool whitelist and on/off switch
+    prune_protected_tools: tuple[str, ...] = ()  # tool names whose results are never pruned
+    prune_enabled: bool = True                    # set False to disable Layer 2 entirely
+    # Lightweight context mode
+    token_overhead_estimate: int = 4_000          # system prompt overhead estimate (tokens)
+    lightweight_turn_threshold: int = 10          # skip Layer 2/3 when turn count <= this
 
     @classmethod
     def from_file_and_args(
@@ -360,8 +368,8 @@ class AgentConfig:
                 agent_section.get("dangerous_mode"),
                 agent_section.get("allow_dangerous"),
             ),
-            max_history_messages=agent_section.get("max_history_messages", 50),
-            max_tool_iterations=agent_section.get("max_tool_iterations", 25),
+            max_history_messages=agent_section.get("max_history_messages", 100),
+            max_tool_iterations=agent_section.get("max_tool_iterations", 100),
             max_output_tokens=agent_section.get("max_output_tokens", 4096),
             command_timeout=agent_section.get("command_timeout", 120),
             permitted_directories=permitted_dirs,
@@ -386,7 +394,7 @@ class AgentConfig:
             truncate_max_age=int(agent_section.get("truncate_max_age", 604_800)),
             # Layer 2: Pruning
             prune_protect_tokens=int(agent_section.get("prune_protect_tokens", 40_000)),
-            prune_minimum_tokens=int(agent_section.get("prune_minimum_tokens", 20_000)),
+            prune_minimum_tokens=int(agent_section.get("prune_minimum_tokens", 10_000)),
             # Layer 3: Compaction
             compaction_buffer_tokens=int(agent_section.get("compaction_buffer_tokens", 20_000)),
             compaction_trigger_ratio=float(agent_section.get("compaction_trigger_ratio", 0.95)),
@@ -396,8 +404,13 @@ class AgentConfig:
             tail_budget_ratio=float(agent_section.get("tail_budget_ratio", 0.25)),
             tail_clamp_min=int(agent_section.get("tail_clamp_min", 2_000)),
             tail_clamp_max=int(agent_section.get("tail_clamp_max", 8_000)),
-            tail_min_turns=int(agent_section.get("tail_min_turns", 2)),
+            tail_min_turns=int(agent_section.get("tail_min_turns", 5)),
             tool_output_max_chars=int(agent_section.get("tool_output_max_chars", 2_000)),
+            compaction_max_output_tokens=int(agent_section.get("compaction_max_output_tokens", 16_000)),
+            prune_protected_tools=tuple(agent_section.get("prune_protected_tools", [])),
+            prune_enabled=bool(agent_section.get("prune_enabled", True)),
+            token_overhead_estimate=int(agent_section.get("token_overhead_estimate", 4_000)),
+            lightweight_turn_threshold=int(agent_section.get("lightweight_turn_threshold", 10)),
         )
 
     @staticmethod

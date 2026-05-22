@@ -124,6 +124,9 @@ class Compactor:
         sections_text = "\n".join(f"## {s}" for s in self.SUMMARY_SECTIONS)
         history_text = self._format_head(head)
         return (
+            "You are a conversation summarizer. Your ONLY task is to create a "
+            "structured summary. Do NOT greet. Do NOT engage in conversation. "
+            "Do NOT ask questions. Output ONLY the summary content, nothing else.\n\n"
             "Create a new anchored summary from the conversation history below.\n\n"
             f"{history_text}\n\n"
             "Output in the following 7 sections:\n"
@@ -134,6 +137,9 @@ class Compactor:
         sections_text = "\n".join(f"## {s}" for s in self.SUMMARY_SECTIONS)
         history_text = self._format_head(head)
         return (
+            "You are a conversation summarizer. Your ONLY task is to update a "
+            "structured summary. Do NOT greet. Do NOT engage in conversation. "
+            "Do NOT ask questions. Output ONLY the updated summary, nothing else.\n\n"
             "Below is the previous summary and new conversation history.\n"
             "Preserve still-true details, remove stale details, merge in new facts.\n\n"
             f"Previous summary:\n{previous_summary}\n\n"
@@ -143,9 +149,16 @@ class Compactor:
         )
 
     def _format_head(self, head: list[Message]) -> str:
-        """Format head messages into text, truncating tool outputs."""
+        """Format head messages into text, truncating tool outputs.
+
+        Skips messages already replaced by pruning (``compacted=True``) to
+        avoid injecting meaningless ``[tool result pruned]`` placeholders into
+        the compaction prompt.
+        """
         parts: list[str] = []
         for msg in head:
+            if msg.compacted:
+                continue  # skip pruned placeholders
             prefix = f"[{msg.role}]"
             if msg.tool_name:
                 prefix = f"[tool:{msg.tool_name}]"
@@ -194,11 +207,15 @@ class Compactor:
         if summary is None:
             return {"status": "stop"}
 
+        # Validate summary quality — reject conversational or malformed output
+        if not self._validate_summary(summary):
+            return {"status": "stop"}
+
         # Check if summary itself is too large (recursive compaction needed)
         summary_tokens = len(summary) // 4
         available = max_context_tokens - self._compaction_buffer - (sum(len(m.content or "") // 4 for m in tail))
         if summary_tokens > available:
-            return {"status": "compact", "summary": summary}
+            return {"status": "compact", "summary": summary, "tail": tail, "head": head}
 
         return {
             "status": "continue",
@@ -206,6 +223,37 @@ class Compactor:
             "head": head,
             "tail": tail,
         }
+
+    @staticmethod
+    def _validate_summary(text: str) -> bool:
+        """Return True only if *text* looks like a valid structured summary.
+
+        Rejects:
+        - Empty or whitespace-only output
+        - Suspiciously short output (< 100 chars)
+        - Conversational openers (greetings, offers to help, etc.)
+        - Output that contains no Markdown section headers (``##``)
+        """
+        if not text or not text.strip():
+            return False
+        stripped = text.strip()
+        if len(stripped) < 100:
+            return False
+        # Reject conversational openers
+        conversational_prefixes = [
+            "hello", "hi ", "hi,", "hi!", "hey", "greetings",
+            "你好", "您好", "嗨",
+            "i'll ", "i will ", "let me ", "sure,", "sure!",
+            "okay", "ok,", "ok!", "of course",
+        ]
+        lower = stripped.lower()
+        for prefix in conversational_prefixes:
+            if lower.startswith(prefix):
+                return False
+        # Must contain at least one section header
+        if "##" not in stripped:
+            return False
+        return True
 
     # -- Step 4: inject structured summary ---------------------------------
 

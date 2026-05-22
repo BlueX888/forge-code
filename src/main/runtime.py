@@ -7,6 +7,7 @@ import copy
 import dataclasses
 import json
 import re
+import sys
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Generator, Protocol
@@ -28,7 +29,50 @@ class StreamChunk:
 from main.config import AgentConfig, DangerousMode
 from main.context import ContextBuilder, Message
 from main.context_manager import ContextWindowManager
-from main.executor import group_tool_calls
+# Tool call grouping (was executor.py — merged inline)
+import dataclasses
+
+from tools.base import ToolCall
+
+@dataclasses.dataclass(frozen=True)
+class ToolCallGroup:
+    """A batch of tool calls that share the same execution strategy."""
+    parallel: bool
+    tool_calls: list[ToolCall]
+
+
+def _group_tool_calls(
+    tool_calls: list[ToolCall],
+    registry: ToolRegistry,
+) -> list[ToolCallGroup]:
+    """Partition *tool_calls* into sequential groups for execution.
+
+    Consecutive READONLY tools are grouped into a single ``parallel=True``
+    group.  Any non-READONLY tool (DESTRUCTIVE, CONCURRENT_SAFE, or unknown)
+    flushes the current READONLY batch and forms its own ``parallel=False``
+    group.
+    """
+    if not tool_calls:
+        return []
+
+    groups: list[ToolCallGroup] = []
+    readonly_batch: list[ToolCall] = []
+
+    def _flush_readonly() -> None:
+        if readonly_batch:
+            groups.append(ToolCallGroup(parallel=True, tool_calls=list(readonly_batch)))
+            readonly_batch.clear()
+
+    for tc in tool_calls:
+        tool = registry.get(tc.tool_name)
+        if tool is not None and tool.safety_label == SafetyLabel.READONLY:
+            readonly_batch.append(tc)
+        else:
+            _flush_readonly()
+            groups.append(ToolCallGroup(parallel=False, tool_calls=[tc]))
+
+    _flush_readonly()
+    return groups
 from cli.io import AgentIO
 from cli.cancellation import AgentCancelled, CancellationToken, EscKeyMonitor
 from safety.permissions import SafetyLabel, PermissionChecker, PermissionRequest
@@ -43,7 +87,12 @@ from tools.registry import ToolRegistry
 # ---------------------------------------------------------------------------
 
 class ModelClient(Protocol):
-    def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse: ...
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        max_tokens: int | None = None,
+    ) -> ModelResponse: ...
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +102,12 @@ class ModelClient(Protocol):
 class PlaceholderModelClient:
     """Simulates model responses by parsing slash commands."""
 
-    def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        max_tokens: int | None = None,
+    ) -> ModelResponse:
         user_msgs = [m for m in messages if m.role == "user"]
         if not user_msgs:
             return ModelResponse(text="(no user input)")
@@ -137,24 +191,24 @@ class AnthropicModelClient:
             self._max_tokens = thinking_budget + max_tokens
         else:
             self._max_tokens = max_tokens
-        # Cache for thinking blocks needed in multi-turn conversations
-        self._cached_thinking_blocks: list[dict[str, Any]] = []
 
-    def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        max_tokens: int | None = None,
+    ) -> ModelResponse:
         api_messages = _to_anthropic_messages(messages)
         system_prompt = ""
         if api_messages and api_messages[0]["role"] == "system":
             system_prompt = api_messages.pop(0)["content"]
 
-        # Inject cached thinking blocks into the last assistant message
-        if self._cached_thinking_blocks and api_messages:
-            api_messages = self._inject_thinking_blocks(api_messages)
-
         api_tools = _to_anthropic_tools(tools)
 
+        effective_max_tokens = max_tokens if max_tokens is not None else self._max_tokens
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": self._max_tokens,
+            "max_tokens": effective_max_tokens,
             "messages": api_messages,
         }
         if system_prompt:
@@ -191,9 +245,6 @@ class AnthropicModelClient:
                     id=block.id,
                 ))
 
-        # Cache thinking blocks for multi-turn
-        self._cached_thinking_blocks = new_thinking_blocks
-
         reasoning_content = "\n".join(thinking_parts) if thinking_parts else None
 
         return ModelResponse(
@@ -201,6 +252,7 @@ class AnthropicModelClient:
             tool_calls=tool_calls,
             stop_reason=response.stop_reason,
             reasoning_content=reasoning_content,
+            thinking_blocks=new_thinking_blocks or None,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
         )
@@ -212,10 +264,6 @@ class AnthropicModelClient:
         system_prompt = ""
         if api_messages and api_messages[0]["role"] == "system":
             system_prompt = api_messages.pop(0)["content"]
-
-        # Inject cached thinking blocks into the last assistant message
-        if self._cached_thinking_blocks and api_messages:
-            api_messages = self._inject_thinking_blocks(api_messages)
 
         api_tools = _to_anthropic_tools(tools)
 
@@ -298,9 +346,6 @@ class AnthropicModelClient:
                     if usage is not None:
                         output_tokens = getattr(usage, "output_tokens", None)
 
-        # Cache thinking blocks for multi-turn
-        self._cached_thinking_blocks = new_thinking_blocks
-
         reasoning_content = "".join(thinking_parts) if thinking_parts else None
 
         return ModelResponse(
@@ -308,28 +353,10 @@ class AnthropicModelClient:
             tool_calls=tool_calls,
             stop_reason=stop_reason,
             reasoning_content=reasoning_content,
+            thinking_blocks=new_thinking_blocks or None,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
-
-    def _inject_thinking_blocks(
-        self, api_messages: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Inject cached thinking blocks into the last assistant message.
-
-        The Anthropic API requires thinking blocks with signatures to be present
-        in assistant messages for multi-turn conversations with extended thinking.
-        """
-        for i in range(len(api_messages) - 1, -1, -1):
-            if api_messages[i]["role"] == "assistant":
-                content = api_messages[i]["content"]
-                if isinstance(content, str):
-                    content = [{"type": "text", "text": content}]
-                # Prepend thinking blocks before text/tool_use blocks
-                api_messages[i]["content"] = self._cached_thinking_blocks + content
-                break
-        self._cached_thinking_blocks = []
-        return api_messages
 
 
 def _to_anthropic_messages(messages: list[Message]) -> list[dict[str, Any]]:
@@ -341,10 +368,12 @@ def _to_anthropic_messages(messages: list[Message]) -> list[dict[str, Any]]:
         elif m.role == "user":
             result.append({"role": "user", "content": m.content})
         elif m.role == "assistant":
+            content: list[dict[str, Any]] = []
+            if m.thinking_blocks:
+                content.extend(m.thinking_blocks)
+            if m.content:
+                content.append({"type": "text", "text": m.content})
             if m.tool_calls:
-                content: list[dict[str, Any]] = []
-                if m.content:
-                    content.append({"type": "text", "text": m.content})
                 for tc in m.tool_calls:
                     content.append({
                         "type": "tool_use",
@@ -352,9 +381,10 @@ def _to_anthropic_messages(messages: list[Message]) -> list[dict[str, Any]]:
                         "name": tc.tool_name,
                         "input": tc.arguments,
                     })
-                result.append({"role": "assistant", "content": content})
-            else:
+            if len(content) == 1 and content[0]["type"] == "text" and not m.thinking_blocks and not m.tool_calls:
                 result.append({"role": "assistant", "content": m.content})
+            else:
+                result.append({"role": "assistant", "content": content})
         elif m.role == "tool":
             # Anthropic requires tool results as user messages with tool_result blocks.
             # Consecutive tool results should be merged into one user message.
@@ -410,7 +440,12 @@ class OpenAIModelClient:
         self._client = OpenAI(**kwargs)
         self._model = model
 
-    def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        max_tokens: int | None = None,
+    ) -> ModelResponse:
         api_messages = _to_openai_messages(messages)
         api_tools = _to_openai_tools(tools) or None
 
@@ -418,6 +453,8 @@ class OpenAIModelClient:
             "model": self._model,
             "messages": api_messages,
         }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
         if api_tools:
             kwargs["tools"] = api_tools
 
@@ -434,6 +471,11 @@ class OpenAIModelClient:
                 try:
                     arguments = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
+                    print(
+                        f"[WARNING] Failed to parse tool arguments JSON for "
+                        f"'{tc.function.name}': {tc.function.arguments[:200]!r}",
+                        file=sys.stderr,
+                    )
                     arguments = {}
                 tool_calls.append(ToolCall(
                     tool_name=tc.function.name,
@@ -525,6 +567,11 @@ class OpenAIModelClient:
             try:
                 arguments = json.loads(b["arguments"])
             except json.JSONDecodeError:
+                print(
+                    f"[WARNING] Failed to parse tool arguments JSON for "
+                    f"'{b['name']}': {b['arguments'][:200]!r}",
+                    file=sys.stderr,
+                )
                 arguments = {}
             tool_calls.append(ToolCall(
                 tool_name=b["name"],
@@ -653,6 +700,11 @@ def parse_tool_call(text: str) -> ToolCall | None:
     try:
         args = json.loads(m.group(2))
     except json.JSONDecodeError:
+        print(
+            f"[WARNING] Failed to parse tool arguments JSON for "
+            f"'{m.group(1)}': {m.group(2)[:200]!r}",
+            file=sys.stderr,
+        )
         return None
     return ToolCall(tool_name=m.group(1), arguments=args, id=str(uuid.uuid4()))
 
@@ -693,7 +745,22 @@ class AgentRuntime:
                 def _summarize(text: str) -> str | None:
                     try:
                         resp = model_client.complete(
-                            [Message(role="user", content=text)], []
+                            [
+                                Message(
+                                    role="system",
+                                    content=(
+                                        "You are a conversation summarizer. "
+                                        "Your ONLY task is to output a structured summary "
+                                        "of the conversation. "
+                                        "Do NOT greet. Do NOT ask questions. "
+                                        "Do NOT engage in conversation. "
+                                        "Output the summary directly, nothing else."
+                                    ),
+                                ),
+                                Message(role="user", content=text),
+                            ],
+                            [],
+                            max_tokens=config.compaction_max_output_tokens,
                         )
                         return resp.text or None
                     except Exception:
@@ -841,7 +908,6 @@ class AgentRuntime:
             )
 
         self._context.add_user_message(user_input)
-        self._context.check_idle_compression()
         tools = self._registry.list_tools()
 
         # Memory injection (consume prefetch result)
@@ -908,7 +974,11 @@ class AgentRuntime:
                 if not tool_calls:
                     # Model is done reasoning — emit final response
                     if response.text:
-                        self._context.add_assistant_message(response.text, reasoning_content=response.reasoning_content)
+                        self._context.add_assistant_message(
+                            response.text,
+                            reasoning_content=response.reasoning_content,
+                            thinking_blocks=response.thinking_blocks,
+                        )
                         if stream_method is None:
                             if response.reasoning_content and self._config.show_thinking:
                                 self._io.print_thinking(response.reasoning_content)
@@ -916,13 +986,23 @@ class AgentRuntime:
                     break
 
                 # Model wants to use tools — record the assistant message with tool calls
-                self._context.add_assistant_message(response.text, tool_calls=tool_calls, reasoning_content=response.reasoning_content)
+                self._context.add_assistant_message(
+                    response.text,
+                    tool_calls=tool_calls,
+                    reasoning_content=response.reasoning_content,
+                    thinking_blocks=response.thinking_blocks,
+                )
                 if response.text and stream_method is None:
                     if response.reasoning_content and self._config.show_thinking:
                         self._io.print_thinking(response.reasoning_content)
                     self._io.print_assistant(response.text)
 
                 cancel_token.check()
+
+                # Announce tool calls immediately — before permission checks,
+                # path approval, or confirmation, so the user sees feedback instantly.
+                for tc in tool_calls:
+                    self._io.print_tool_call(tc.tool_name, tc.arguments)
 
                 # Execute each tool call
                 self._execute_tool_calls(tool_calls, cancel_token=cancel_token)
@@ -936,7 +1016,11 @@ class AgentRuntime:
         except AgentCancelled as exc:
             content = exc.partial_text
             if content:
-                self._context.add_assistant_message(content + "\n\n[已被用户中断]", reasoning_content=exc.reasoning_content)
+                self._context.add_assistant_message(
+                    content + "\n\n[已被用户中断]",
+                    reasoning_content=exc.reasoning_content,
+                    thinking_blocks=None,
+                )
             self._io.print_system("[已取消]")
         finally:
             esc_monitor.stop()
@@ -946,8 +1030,41 @@ class AgentRuntime:
                 del self._esc_monitor
             self._io.drain_input_buffer()
             self._token_tracker.end_turn()
+            turn_end_context = self._context.estimate_context_usage()
+            self._token_tracker.record_turn_end_context(turn_end_context)
 
     # -- tool execution -----------------------------------------------------
+
+    def _check_and_approve_path(self, tool_call: ToolCall) -> bool:
+        """Check and approve a path argument for *tool_call*.
+
+        Returns ``True`` if the path is allowed (no path, in sandbox, or
+        user-approved).  Returns ``False`` if access was denied.
+        """
+        path_val = tool_call.arguments.get("path")
+        if not path_val:
+            return True
+
+        path = Path(path_val)
+        if not path.is_absolute():
+            path = self._config.working_directory / path
+
+        if hasattr(self._config, "needs_path_approval"):
+            if self._config.needs_path_approval(path):
+                resolved_path = path.resolve()
+                approval_dir = resolved_path.parent if not resolved_path.is_dir() else resolved_path
+                esc_monitor = getattr(self, "_esc_monitor", None)
+                if esc_monitor is not None:
+                    with esc_monitor.paused():
+                        confirmed = self._confirm_path_access(tool_call, approval_dir)
+                else:
+                    confirmed = self._confirm_path_access(tool_call, approval_dir)
+
+                if not confirmed:
+                    return False
+                self._config.approve_directory(approval_dir)
+
+        return True
 
     def _execute_tool(self, tool_call: ToolCall) -> None:
         """Look up, permission-check, and run a single tool call."""
@@ -961,35 +1078,23 @@ class AgentRuntime:
             )
             return
 
-        # Single permission check (path sandbox + safety label + command policy)
+        # Path approval (sandbox check + user confirmation if needed)
+        if not self._check_and_approve_path(tool_call):
+            self._io.print_error("Permission denied: Path access denied by user")
+            self._context.add_tool_result(
+                tool_call.tool_name,
+                ToolResult(False, "", "Permission denied: Path access denied by user"),
+                tool_call_id=tool_call.id,
+            )
+            return
+
+        # Extract path for PermissionRequest
+        path = None
         path_val = tool_call.arguments.get("path")
         if path_val:
             path = Path(path_val)
             if not path.is_absolute():
                 path = self._config.working_directory / path
-        else:
-            path = None
-
-        if path and hasattr(self._config, "needs_path_approval"):
-            if self._config.needs_path_approval(path):
-                resolved_path = path.resolve()
-                approval_dir = resolved_path.parent if not resolved_path.is_dir() else resolved_path
-                esc_monitor = getattr(self, "_esc_monitor", None)
-                if esc_monitor is not None:
-                    with esc_monitor.paused():
-                        confirmed = self._confirm_path_access(tool_call, approval_dir)
-                else:
-                    confirmed = self._confirm_path_access(tool_call, approval_dir)
-
-                if not confirmed:
-                    self._io.print_error("Permission denied: Path access denied by user")
-                    self._context.add_tool_result(
-                        tool_call.tool_name,
-                        ToolResult(False, "", "Permission denied: Path access denied by user"),
-                        tool_call_id=tool_call.id,
-                    )
-                    return
-                self._config.approve_directory(approval_dir)
 
         command = tool_call.arguments.get("command")
         req = PermissionRequest(safety_label=tool.safety_label, path=path, command=command)
@@ -1026,7 +1131,18 @@ class AgentRuntime:
                 )
                 return
 
-        self._io.print_tool_call(tool_call.tool_name, tool_call.arguments)
+        # Validate required parameters before calling tool.run()
+        required_params = (tool.parameters_schema or {}).get("required", [])
+        for param in required_params:
+            if not tool_call.arguments.get(param):
+                msg = f"Missing required parameter: '{param}' for tool '{tool_call.tool_name}'"
+                self._io.print_error(msg)
+                self._context.add_tool_result(
+                    tool_call.tool_name, ToolResult(False, "", msg),
+                    tool_call_id=tool_call.id,
+                )
+                return
+
         tool_result = tool.run(arguments=tool_call.arguments, config=self._config)
         self._context.add_tool_result(tool_call.tool_name, tool_result, tool_call_id=tool_call.id)
         self._io.print_tool_result(tool_call.tool_name, tool_result, tool_call.arguments)
@@ -1053,7 +1169,7 @@ class AgentRuntime:
                 self._execute_tool(tc)
             return
 
-        groups = group_tool_calls(tool_calls, self._registry)
+        groups = _group_tool_calls(tool_calls, self._registry)
         for g_idx, group in enumerate(groups):
             if cancel_token is not None and cancel_token.cancelled:
                 for rem_group in groups[g_idx:]:
@@ -1097,34 +1213,23 @@ class AgentRuntime:
                 )
                 continue
 
+            # Path approval (shared helper, same as _execute_tool)
+            if not self._check_and_approve_path(tc):
+                self._io.print_error("Permission denied: Path access denied by user")
+                self._context.add_tool_result(
+                    tc.tool_name,
+                    ToolResult(False, "", "Permission denied: Path access denied by user"),
+                    tool_call_id=tc.id,
+                )
+                continue
+
+            # Extract path for PermissionRequest
+            path = None
             path_val = tc.arguments.get("path")
             if path_val:
                 path = Path(path_val)
                 if not path.is_absolute():
                     path = self._config.working_directory / path
-            else:
-                path = None
-
-            if path and hasattr(self._config, "needs_path_approval"):
-                if self._config.needs_path_approval(path):
-                    resolved_path = path.resolve()
-                    approval_dir = resolved_path.parent if not resolved_path.is_dir() else resolved_path
-                    esc_monitor = getattr(self, "_esc_monitor", None)
-                    if esc_monitor is not None:
-                        with esc_monitor.paused():
-                            confirmed = self._confirm_path_access(tc, approval_dir)
-                    else:
-                        confirmed = self._confirm_path_access(tc, approval_dir)
-
-                    if not confirmed:
-                        self._io.print_error("Permission denied: Path access denied by user")
-                        self._context.add_tool_result(
-                            tc.tool_name,
-                            ToolResult(False, "", "Permission denied: Path access denied by user"),
-                            tool_call_id=tc.id,
-                        )
-                        continue
-                    self._config.approve_directory(approval_dir)
 
             req = PermissionRequest(safety_label=tool.safety_label, path=path)
             result = self._permissions.check(req)
@@ -1137,7 +1242,19 @@ class AgentRuntime:
                 )
                 continue
 
-            self._io.print_tool_call(tc.tool_name, tc.arguments)
+            # Validate required parameters before scheduling tool.run()
+            required_params = (tool.parameters_schema or {}).get("required", [])
+            missing = next(
+                (p for p in required_params if not tc.arguments.get(p)), None
+            )
+            if missing is not None:
+                msg = f"Missing required parameter: '{missing}' for tool '{tc.tool_name}'"
+                self._io.print_error(msg)
+                self._context.add_tool_result(
+                    tc.tool_name, ToolResult(False, "", msg), tool_call_id=tc.id,
+                )
+                continue
+
             prepared.append((tc, tool))
 
         if not prepared:

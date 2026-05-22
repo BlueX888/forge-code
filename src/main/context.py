@@ -24,6 +24,7 @@ class Message:
     tool_call_id: str | None = None            # tool result correlation id
     tool_name: str | None = None
     reasoning_content: str | None = None        # thinking/reasoning content (OpenAI-compatible APIs)
+    thinking_blocks: list[dict[str, Any]] | None = None # structured thinking blocks (Anthropic)
     summary: bool = False                       # marks summary messages from compaction
     compacted: bool = False                     # marks processed-by-pruning/compaction messages
 
@@ -52,9 +53,9 @@ class ContextBuilder:
 
     def _append(self, msg: Message) -> None:
         self._history.append(msg)
-        self._prune_history_safely()
-        if self._window_manager is not None:
-            self._window_manager.notify_message_added(msg)
+        if self._window_manager is None:
+            # No 3-layer pipeline: use simple message-count safety valve
+            self._prune_history_safely()
         if self._on_message is not None:
             self._on_message(msg)
 
@@ -72,8 +73,22 @@ class ContextBuilder:
         self._system_prompt_cache = None
         self._append(Message(role="user", content=content))
 
-    def add_assistant_message(self, content: str, tool_calls: list[ToolCall] | None = None, reasoning_content: str | None = None) -> None:
-        self._append(Message(role="assistant", content=content, tool_calls=tool_calls, reasoning_content=reasoning_content))
+    def add_assistant_message(
+        self,
+        content: str,
+        tool_calls: list[ToolCall] | None = None,
+        reasoning_content: str | None = None,
+        thinking_blocks: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self._append(
+            Message(
+                role="assistant",
+                content=content,
+                tool_calls=tool_calls,
+                reasoning_content=reasoning_content,
+                thinking_blocks=thinking_blocks,
+            )
+        )
 
     def add_tool_result(self, tool_name: str, result: ToolResult, tool_call_id: str | None = None) -> None:
         content = result.output if result.success else f"Error: {result.error}"
@@ -83,38 +98,37 @@ class ContextBuilder:
         if self._window_manager is not None:
             self._window_manager.after_add(self._history, self._replace_history)
 
-    def load_history(self, messages: list[Message], content_replacements: dict[str, str] | None = None) -> None:
+    def load_history(self, messages: list[Message]) -> None:
         """Load persisted messages into the deque without triggering the callback."""
         self._system_prompt_cache = None
         for msg in messages:
             self._history.append(copy.deepcopy(msg))
-        if content_replacements and self._window_manager is not None:
-            self._window_manager.load_content_replacements(content_replacements)
 
     def history_snapshot(self) -> list[Message]:
         """Return a detached copy of the current model context history."""
         return [copy.deepcopy(msg) for msg in self._history]
 
     def _replace_history(self, messages: list[Message]) -> None:
-        """Replace the entire history deque (used by Tier 4 compaction)."""
+        """Replace the entire history deque (used by compaction)."""
         self._system_prompt_cache = None
         self._history.clear()
         for msg in messages:
             self._history.append(msg)
-        if self._window_manager is not None:
-            self._window_manager.invalidate_anchor()
         if self._on_replace is not None:
             self._on_replace(messages)
 
-    def check_idle_compression(self) -> None:
-        """Delegate idle-based compression to the window manager (Tier 3)."""
-        if self._window_manager is not None:
-            self._window_manager.check_idle(self._history)
-
     def update_token_anchor(self, input_tokens: int) -> None:
-        """Forward API usage anchor to the window manager."""
+        """Pass actual API token usage to the window manager's budget."""
         if self._window_manager is not None:
-            self._window_manager.update_anchor(input_tokens)
+            self._window_manager.set_actual_usage(input_tokens)
+
+    def estimate_context_usage(self) -> int:
+        """Estimate token count of current context (system prompt + all history)."""
+        messages = self.build()
+        if self._window_manager is not None:
+            return self._window_manager.estimate_context_usage(messages)
+        total = sum(len(m.content or "") // 4 for m in messages)
+        return total + 4000
 
     # -- builders -----------------------------------------------------------
 

@@ -48,10 +48,12 @@ class ToolOutputPruner:
         protect_tokens: int = 40_000,
         minimum_tokens: int = 20_000,
         turns_to_protect: int = 2,
+        protected_tools: tuple[str, ...] = (),
     ) -> None:
         self._protect_tokens = protect_tokens
         self._minimum_tokens = minimum_tokens
         self._turns_to_protect = turns_to_protect
+        self._protected_tools: frozenset[str] = frozenset(protected_tools)
 
     def prune(self, history: deque[Message]) -> bool:
         """Run the pruning algorithm.
@@ -82,8 +84,10 @@ class ToolOutputPruner:
             if msg.summary:
                 break
 
-            # Candidate for pruning
+            # Candidate for pruning — skip whitelist tools
             if msg.role == "tool" and not msg.compacted:
+                if msg.tool_name and msg.tool_name in self._protected_tools:
+                    continue  # never prune whitelisted tool output
                 tokens = _message_tokens(msg)
                 if cumulative_tokens + tokens <= self._protect_tokens:
                     cumulative_tokens += tokens

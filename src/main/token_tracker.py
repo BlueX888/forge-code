@@ -53,6 +53,10 @@ class TokenUsageTracker:
         self._turn_count += 1
         return self._current_turn
 
+    def record_turn_end_context(self, context_tokens: int) -> None:
+        """Override the per-API-call context with the true turn-end value."""
+        self._last_context_used = context_tokens
+
     # -- accessors ----------------------------------------------------------
 
     @property
