@@ -801,6 +801,8 @@ class AgentRuntime:
         self._token_tracker = TokenUsageTracker(config.max_context_tokens)
         # Memory system state
         self._session_memory_bytes = 0
+        self._already_surfaced_memories: set[str] = set()
+        self._pending_memory_prefetch: "MemoryPrefetchHandle | None" = None
         if session is not None:
             self._token_tracker.load_from_dict({
                 "session_input": session.metadata.total_input_tokens,
@@ -896,30 +898,35 @@ class AgentRuntime:
         # Check for pending compaction message at deque head
         self._process_pending_compaction()
 
-        # Memory prefetch (background thread)
-        memory_future = None
+        # Step A: Consume the previous turn's settled prefetch (non-blocking).
+        # We check *before* adding the new user message so the injected content
+        # is appended to the message we are about to add below.
+        consumed_memory = ""
         if self._config.memory_enabled:
-            from memory.memory import start_memory_prefetch, PREFETCH_TIMEOUT
-            memory_future = start_memory_prefetch(
-                query=user_input,
-                config=self._config,
-                model_client=self._model,
-                session_memory_bytes=self._session_memory_bytes,
-            )
+            from memory.memory import start_memory_prefetch, MemoryPrefetchHandle
+            pf = self._pending_memory_prefetch
+            if pf is not None and pf.settled and not pf.consumed:
+                consumed_memory = pf.result()
+                pf.consumed = True
 
         self._context.add_user_message(user_input)
         tools = self._registry.list_tools()
 
-        # Memory injection (consume prefetch result)
-        if memory_future is not None:
-            try:
-                memory_content = memory_future.result(timeout=PREFETCH_TIMEOUT)
-                if memory_content:
-                    last_msg = self._context._history[-1]
-                    last_msg.content += "\n\n" + memory_content
-                    self._session_memory_bytes += len(memory_content.encode("utf-8"))
-            except Exception:
-                pass  # Skip memory on timeout or error
+        # Inject the recalled memory content into the user message just added.
+        if consumed_memory:
+            last_msg = self._context._history[-1]
+            last_msg.content += "\n\n" + consumed_memory
+            self._session_memory_bytes += len(consumed_memory.encode("utf-8"))
+
+        # Step B: Start a new prefetch for the *next* turn (fully non-blocking).
+        if self._config.memory_enabled:
+            self._pending_memory_prefetch = start_memory_prefetch(
+                query=user_input,
+                config=self._config,
+                model_client=self._model,
+                session_memory_bytes=self._session_memory_bytes,
+                already_surfaced=self._already_surfaced_memories,
+            )
 
         self._token_tracker.begin_turn()
 

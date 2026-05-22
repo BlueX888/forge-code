@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import dataclasses
 import json
 import logging
 import time
@@ -26,6 +27,33 @@ MAX_SINGLE_MEMORY_BYTES = 4 * 1024    # 4 KB
 MAX_RECALLED_MEMORIES = 5
 HEADER_SCAN_LINES = 30
 PREFETCH_TIMEOUT = 5.0  # seconds
+MAX_MEMORY_FILES = 200
+
+
+@dataclasses.dataclass
+class MemoryPrefetchHandle:
+    """Non-blocking prefetch handle with settled/consumed flags."""
+
+    future: concurrent.futures.Future  # type: ignore[type-arg]
+    consumed: bool = False
+
+    @property
+    def settled(self) -> bool:
+        """True when the background prefetch has finished (success or error)."""
+        return self.future.done()
+
+    def result(self) -> str:
+        """Return the prefetch result without blocking.
+
+        Only call this when ``settled`` is True.  Returns an empty string if
+        the future is not yet done or if the worker raised an exception.
+        """
+        if not self.future.done():
+            return ""
+        try:
+            return self.future.result(timeout=0) or ""
+        except Exception:
+            return ""
 
 
 class MemoryType(str, Enum):
@@ -105,8 +133,15 @@ def scan_memory_headers(config: AgentConfig) -> list[dict[str, str]]:
     md = _memory_dir(config)
     if md is None:
         return []
+    files = _memory_files(md)
+    if len(files) > MAX_MEMORY_FILES:
+        logger.warning(
+            "Memory directory has %d files, limiting scan to %d (MAX_MEMORY_FILES).",
+            len(files), MAX_MEMORY_FILES,
+        )
+        files = files[:MAX_MEMORY_FILES]
     headers: list[dict[str, str]] = []
-    for f in _memory_files(md):
+    for f in files:
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
             # Only take first N lines for parsing
@@ -145,8 +180,18 @@ def recall_memories(
     query: str,
     headers: list[dict[str, str]],
     model_client: Any,
+    already_surfaced: set[str] | None = None,
 ) -> list[str]:
-    """Call LLM side query to select relevant memories. Returns filenames."""
+    """Call LLM side query to select relevant memories. Returns filenames.
+
+    Args:
+        query: The user's current query text.
+        headers: Parsed frontmatter dicts from all memory files.
+        model_client: LLM client used to rank relevance.
+        already_surfaced: Mutable set of filenames already injected this
+            session.  Newly selected filenames are added to the set before
+            returning so callers automatically get deduplication across turns.
+    """
     if not headers:
         return []
 
@@ -183,7 +228,14 @@ def recall_memories(
         data = json.loads(text)
         selected = data.get("selected_memories", [])
         if isinstance(selected, list):
-            return [s for s in selected[:MAX_RECALLED_MEMORIES] if isinstance(s, str)]
+            candidates = [
+                s for s in selected[:MAX_RECALLED_MEMORIES] if isinstance(s, str)
+            ]
+            # Deduplicate: remove filenames already injected this session
+            if already_surfaced is not None:
+                candidates = [s for s in candidates if s not in already_surfaced]
+                already_surfaced.update(candidates)
+            return candidates
     except Exception as exc:
         logger.debug("Memory recall failed: %s", exc)
     return []
@@ -260,6 +312,8 @@ def build_memory_prompt_section(config: AgentConfig) -> str:
         "---\n"
         "Content...\n"
         "```\n\n"
+        "**Naming convention**: Use `{type}_{brief_name}.md` for the filename.\n"
+        "Examples: `user_preferences.md`, `feedback_code_style.md`, `project_goals.md`\n\n"
         "After creating or updating a memory file, also update MEMORY.md in the same directory.\n"
         "MEMORY.md is an index -- each entry should be one line: `- [Title](file.md) -- one-line hook`.\n\n"
         "### Memory Types\n"
@@ -281,6 +335,13 @@ def auto_update_memory_index(config: AgentConfig) -> None:
     if md is None:
         return
     files = _memory_files(md)
+    if len(files) > MAX_MEMORY_FILES:
+        logger.warning(
+            "Memory directory has %d files which exceeds MAX_MEMORY_FILES (%d). "
+            "Consider archiving old memories. Index will include the first %d files.",
+            len(files), MAX_MEMORY_FILES, MAX_MEMORY_FILES,
+        )
+        files = files[:MAX_MEMORY_FILES]
     if not files:
         # Remove MEMORY.md if no memories exist
         index_path = md / "MEMORY.md"
@@ -325,8 +386,14 @@ def start_memory_prefetch(
     config: AgentConfig,
     model_client: Any,
     session_memory_bytes: int,
-) -> concurrent.futures.Future[str] | None:
-    """Start memory prefetch in background thread. Returns Future or None if skipped."""
+    already_surfaced: set[str] | None = None,
+) -> MemoryPrefetchHandle | None:
+    """Start memory prefetch in background thread.
+
+    Returns a :class:`MemoryPrefetchHandle` that can be polled non-blocking
+    via ``handle.settled`` / ``handle.result()``, or ``None`` if the prefetch
+    was skipped due to gate conditions.
+    """
     # Gate 1: multi-word input
     if " " not in query.strip():
         return None
@@ -341,17 +408,24 @@ def start_memory_prefetch(
     if session_memory_bytes >= MAX_SESSION_MEMORY_BYTES:
         return None
 
-    return _prefetch_executor.submit(
-        _do_memory_prefetch, query, config, model_client,
+    surfaced: set[str] = already_surfaced if already_surfaced is not None else set()
+    future = _prefetch_executor.submit(
+        _do_memory_prefetch, query, config, model_client, surfaced,
     )
+    return MemoryPrefetchHandle(future=future)
 
 
-def _do_memory_prefetch(query: str, config: AgentConfig, model_client: Any) -> str:
+def _do_memory_prefetch(
+    query: str,
+    config: AgentConfig,
+    model_client: Any,
+    already_surfaced: set[str],
+) -> str:
     """Synchronous prefetch worker (runs in thread)."""
     headers = scan_memory_headers(config)
     if not headers:
         return ""
-    selected = recall_memories(query, headers, model_client)
+    selected = recall_memories(query, headers, model_client, already_surfaced)
     if not selected:
         return ""
     memories: list[dict[str, Any]] = []
