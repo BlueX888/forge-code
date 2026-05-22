@@ -108,6 +108,21 @@ class ContextBuilder:
         """Return a detached copy of the current model context history."""
         return [copy.deepcopy(msg) for msg in self._history]
 
+    def clear_history(self) -> None:
+        """Clear conversation context while keeping persistent state.
+
+        Resets the history deque, the system prompt cache, and the compaction
+        pending flag.  The ``_on_replace`` callback is invoked with an empty
+        list so that ``session.context_messages`` is updated (without touching
+        ``session.messages`` — the permanent log).
+        """
+        self._system_prompt_cache = None
+        self._history.clear()
+        if self._window_manager is not None:
+            self._window_manager._compaction_pending = False
+        if self._on_replace is not None:
+            self._on_replace([])
+
     def _replace_history(self, messages: list[Message]) -> None:
         """Replace the entire history deque (used by compaction)."""
         self._system_prompt_cache = None
@@ -141,6 +156,16 @@ class ContextBuilder:
 
     def _build_system_prompt(self) -> str:
         if self._system_prompt_cache is None:
-            builder = SystemPromptBuilder(self._config, self._registry)
+            plan_mode = getattr(self._config, "plan_mode", False)
+            plan_file = getattr(self._config, "plan_file", None)
+            builder = SystemPromptBuilder(
+                self._config, self._registry,
+                plan_mode=plan_mode,
+                plan_file=plan_file,
+            )
             self._system_prompt_cache = builder.build()
         return self._system_prompt_cache
+
+    def invalidate_system_prompt_cache(self) -> None:
+        """Force the system prompt to be rebuilt on next ``build()``."""
+        self._system_prompt_cache = None

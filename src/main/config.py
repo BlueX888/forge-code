@@ -424,7 +424,9 @@ class AgentConfig:
     @staticmethod
     def _compute_memory_dir(working_directory: Path) -> Path:
         """Compute project-isolated memory directory: ~/.forgecode/projects/{hash}/memory/"""
-        project_hash = hashlib.sha256(str(working_directory).encode()).hexdigest()[:16]
+        project_hash = hashlib.sha256(
+            _normalize_path_for_hash(working_directory).encode()
+        ).hexdigest()[:16]
         return Path.home() / ".forgecode" / "projects" / project_hash / "memory"
 
     @staticmethod
@@ -458,8 +460,22 @@ class AgentConfig:
         )
 
 
+def _normalize_path_for_hash(p: Path) -> str:
+    """Normalize a path to a canonical string for hashing.
+
+    On Windows, paths are case-insensitive, so we casefold the resolved path
+    to ensure that F:\\Forge-Code and F:\\FORGE-CODE hash identically.
+    """
+    resolved = p.resolve()
+    if sys.platform == "win32":
+        return str(resolved).casefold()
+    return str(resolved)
+
+
 def compute_session_dir(working_directory: Path) -> Path:
     """Compute project-isolated session directory: ~/.forgecode/sessions/{hash}/sessions/"""
-    project_hash = hashlib.sha256(str(working_directory).encode()).hexdigest()[:16]
+    project_hash = hashlib.sha256(
+        _normalize_path_for_hash(working_directory).encode()
+    ).hexdigest()[:16]
     return Path.home() / ".forgecode" / "sessions" / project_hash / "sessions"
 

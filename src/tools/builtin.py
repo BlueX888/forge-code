@@ -145,6 +145,8 @@ def _human_size(nbytes: int) -> str:
 
 def register_builtin_tools(registry: ToolRegistry) -> None:
     """Register all built-in tools into *registry*."""
+    from tools.enter_plan_mode import EnterPlanModeTool
+    from tools.exit_plan_mode import ExitPlanModeTool
     from tools.file_write import EditFileTool, WriteFileTool
     from tools.search import SearchTool
     from tools.shell import RunCommandTool
@@ -155,3 +157,5 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     registry.register(EditFileTool())
     registry.register(SearchTool())
     registry.register(RunCommandTool())
+    registry.register(EnterPlanModeTool())
+    registry.register(ExitPlanModeTool())

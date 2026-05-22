@@ -119,6 +119,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Disable session creation, persistence, and loading for this run.",
     )
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="Start the session in plan mode for the initial task.",
+    )
 
     args = parser.parse_args(argv)
 
@@ -172,20 +177,10 @@ def main(argv: list[str] | None = None) -> None:
         cli_thinking_budget=args.thinking_budget,
     )
 
-    from safety.permissions import DynamicPathConfig
-    config = DynamicPathConfig(config)
-
-    registry = ToolRegistry()
-    register_builtin_tools(registry)
-
-    command_policy = CommandPolicy(
-        extra_safe_commands=frozenset(config.extra_safe_commands),
-    )
-    permissions = PermissionChecker(config, extra_rules=[make_command_rule(command_policy)])
-    io = AgentIO()
-
-    # -- Session setup ---------------------------------------------------
+    # Session setup must happen first (needed for session_id in DynamicPathConfig)
     from main.session import SessionManager, SessionData
+
+    io = AgentIO()
 
     if args.no_session and (args.resume or args.session is not None):
         io.print_error("Cannot use --no-session when specifying --resume or --session.")
@@ -271,6 +266,50 @@ def main(argv: list[str] | None = None) -> None:
             )
             io.print_system(f"New session: {session.metadata.session_id}")
 
+    # Create DynamicPathConfig with session_id
+    sid = session.metadata.session_id if session is not None else "no-session"
+    from safety.permissions import DynamicPathConfig
+    config = DynamicPathConfig(config, session_id=sid)
+
+    # Inject approval callback for ExitPlanMode
+    def _approval_callback(summary: str) -> str:
+        io.print_system(f"\n--- Plan Ready for Review ---")
+        io.print_system(summary)
+        plan_file = config.plan_file
+        if plan_file and plan_file.is_file():
+            io.print_system(f"\nPlan file: {plan_file}\n")
+            try:
+                content = plan_file.read_text(encoding="utf-8")
+                io.print_system(content)
+            except OSError:
+                io.print_system("(could not read plan file)")
+        io.print_system("")
+        choices = [
+            ("1", "clear_execute", "Clear context and execute (auto-accept edits)"),
+            ("2", "execute", "Execute with current context (auto-accept edits)"),
+            ("3", "manual", "Execute with manual approval for each destructive action"),
+            ("4", "continue", "Continue planning (provide feedback to revise)"),
+        ]
+        for key, _, desc in choices:
+            io.print_system(f"  [{key}] {desc}")
+        while True:
+            response = io.prompt_user("\nChoose [1-4]: ")
+            if response:
+                for key, value, _ in choices:
+                    if response.strip() == key:
+                        return value
+            io.print_error("Please choose 1, 2, 3, or 4")
+
+    config._approval_callback = _approval_callback
+
+    registry = ToolRegistry()
+    register_builtin_tools(registry)
+
+    command_policy = CommandPolicy(
+        extra_safe_commands=frozenset(config.extra_safe_commands),
+    )
+    permissions = PermissionChecker(config, extra_rules=[make_command_rule(command_policy)])
+
     if config.provider == "anthropic":
         try:
             from main.runtime import AnthropicModelClient
@@ -310,6 +349,7 @@ def main(argv: list[str] | None = None) -> None:
         config, registry, permissions, io, model_client,
         session_manager=session_manager,
         session=session,
+        plan_mode_startup=args.plan,
     )
 
     try:
@@ -319,6 +359,8 @@ def main(argv: list[str] | None = None) -> None:
             except OSError as exc:
                 io.print_error(f"Could not read prompt file: {exc}")
                 sys.exit(1)
+            if args.plan:
+                runtime.enter_plan_mode(prompt)
             runtime.run_once(prompt)
         else:
             runtime.run()

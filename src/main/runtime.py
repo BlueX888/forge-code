@@ -726,6 +726,7 @@ class AgentRuntime:
         *,
         session_manager: SessionManager | None = None,
         session: SessionData | None = None,
+        plan_mode_startup: bool = False,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -799,10 +800,6 @@ class AgentRuntime:
 
         # Token usage tracking
         self._token_tracker = TokenUsageTracker(config.max_context_tokens)
-        # Memory system state
-        self._session_memory_bytes = 0
-        self._already_surfaced_memories: set[str] = set()
-        self._pending_memory_prefetch: "MemoryPrefetchHandle | None" = None
         if session is not None:
             self._token_tracker.load_from_dict({
                 "session_input": session.metadata.total_input_tokens,
@@ -810,6 +807,79 @@ class AgentRuntime:
                 "turn_count": session.metadata.turn_count,
                 "last_context_used": session.metadata.last_context_used,
             })
+
+    # -- plan mode -------------------------------------------------------
+
+    def enter_plan_mode(self, task_description: str) -> None:
+        """Enter plan mode with the given task description."""
+        from main.plan_mode import create_plan_state
+
+        sid = self._session.metadata.session_id if self._session is not None else "no-session"
+
+        state = create_plan_state(self._config, task_description=task_description, session_id=sid)
+
+        # Remember previous dangerous mode for symmetric restore
+        self._pre_plan_dangerous_mode = self._config.allow_dangerous_operations
+
+        # Activate plan mode on the config
+        if hasattr(self._config, "enter_plan_mode"):
+            self._config.enter_plan_mode(state.plan_file)
+        if hasattr(self._config, "_plan_state_raw"):
+            self._config._plan_state_raw = state  # type: ignore[attr-defined]
+
+        # Invalidate prompt cache so plan mode section appears
+        self._context.invalidate_system_prompt_cache()
+
+        # Notify user
+        self._io.print_system(f"\nEntered plan mode for: {task_description}")
+        self._io.print_system(f"Plan file: {state.plan_file}")
+        self._io.print_system("All destructive operations are blocked. Only the plan file can be written.\n")
+
+    def _handle_plan_exit(self) -> None:
+        """Process plan exit after ExitPlanMode tool returns.
+
+        Reads ``_plan_choice`` from the config to determine what action to take:
+        - ``clear_execute``: clear context, auto-accept dangerous ops
+        - ``execute``: keep context, auto-accept dangerous ops
+        - ``manual``: keep context, restore previous dangerous mode
+        """
+        if not hasattr(self._config, "_plan_choice"):
+            return
+        choice: str | None = getattr(self._config, "_plan_choice", None)
+        if choice is None:
+            return
+
+        # Clear the choice flag
+        self._config._plan_choice = None  # type: ignore[attr-defined]
+
+        if choice == "clear_execute":
+            self._context.clear_history()
+            self._session_memory_bytes = 0
+            self._already_surfaced_memories.clear()
+            self._io.print_system("Plan approved — context cleared, auto-accept mode on.")
+        elif choice == "execute":
+            self._io.print_system("Plan approved — executing with auto-accept.")
+        elif choice == "manual":
+            # Restore previous dangerous mode
+            if hasattr(self, "_pre_plan_dangerous_mode") and hasattr(self._config, "_config"):
+                object.__setattr__(
+                    self._config._config, "allow_dangerous_operations",
+                    self._pre_plan_dangerous_mode,
+                )
+            self._io.print_system("Plan approved — executing with manual approval.")
+
+        # Switch to auto-accept for clear_execute and execute
+        if choice in ("clear_execute", "execute") and hasattr(self._config, "_config"):
+            from main.config import DangerousMode
+            object.__setattr__(
+                self._config._config, "allow_dangerous_operations",
+                DangerousMode.ALLOW,
+            )
+
+        # Invalidate prompt cache (plan mode section removed)
+        self._context.invalidate_system_prompt_cache()
+
+    # -- main loop -------------------------------------------------------
 
     def run(self) -> None:
         self._io.print_banner(self._config, self._session, self._token_tracker)
@@ -864,6 +934,22 @@ class AgentRuntime:
                         type_badge = f"[{m['type']}]"
                         self._io.print_system(f"  {type_badge:14s} {m['name']} -- {m['description']}")
                 continue
+            if user_input == "/clear":
+                self._context.clear_history()
+                self._session_memory_bytes = 0
+                self._already_surfaced_memories.clear()
+                self._token_tracker.begin_turn()
+                self._io.print_system("Context cleared. Session log and memory files preserved.")
+                continue
+            if user_input.startswith("/plan "):
+                task = user_input.removeprefix("/plan ").strip()
+                self.enter_plan_mode(task)
+                self._run_agent_turn(task)
+                continue
+            if user_input == "/plan":
+                self._io.print_system("Usage: /plan <task description>")
+                self._io.print_system("Enter plan mode for complex tasks — read-only exploration before making changes.")
+                continue
             if user_input == "/history" or user_input.startswith("/history "):
                 self._print_history(user_input.removeprefix("/history").strip())
                 continue
@@ -898,35 +984,8 @@ class AgentRuntime:
         # Check for pending compaction message at deque head
         self._process_pending_compaction()
 
-        # Step A: Consume the previous turn's settled prefetch (non-blocking).
-        # We check *before* adding the new user message so the injected content
-        # is appended to the message we are about to add below.
-        consumed_memory = ""
-        if self._config.memory_enabled:
-            from memory.memory import start_memory_prefetch, MemoryPrefetchHandle
-            pf = self._pending_memory_prefetch
-            if pf is not None and pf.settled and not pf.consumed:
-                consumed_memory = pf.result()
-                pf.consumed = True
-
         self._context.add_user_message(user_input)
         tools = self._registry.list_tools()
-
-        # Inject the recalled memory content into the user message just added.
-        if consumed_memory:
-            last_msg = self._context._history[-1]
-            last_msg.content += "\n\n" + consumed_memory
-            self._session_memory_bytes += len(consumed_memory.encode("utf-8"))
-
-        # Step B: Start a new prefetch for the *next* turn (fully non-blocking).
-        if self._config.memory_enabled:
-            self._pending_memory_prefetch = start_memory_prefetch(
-                query=user_input,
-                config=self._config,
-                model_client=self._model,
-                session_memory_bytes=self._session_memory_bytes,
-                already_surfaced=self._already_surfaced_memories,
-            )
 
         self._token_tracker.begin_turn()
 
@@ -1116,10 +1175,18 @@ class AgentRuntime:
             return
 
         # Interactive confirmation for destructive tools or commands needing approval
+        # In plan mode, writing to the plan file skips confirmation (already approved via EnterPlanMode)
+        plan_file: Path | None = getattr(self._config, "plan_file", None)
+        is_plan_file_write = (
+            plan_file is not None
+            and path is not None
+            and path.resolve() == plan_file.resolve()
+        )
         needs_confirm = (
             result.requires_confirmation
             or (tool.safety_label == SafetyLabel.DESTRUCTIVE
-                and self._config.allow_dangerous_operations == DangerousMode.ASK)
+                and self._config.allow_dangerous_operations == DangerousMode.ASK
+                and not is_plan_file_write)
         )
         if needs_confirm:
             esc_monitor = getattr(self, "_esc_monitor", None)
@@ -1151,6 +1218,13 @@ class AgentRuntime:
                 return
 
         tool_result = tool.run(arguments=tool_call.arguments, config=self._config)
+
+        # Detect plan mode state changes after tool execution
+        if tool_call.tool_name == "ExitPlanMode":
+            self._handle_plan_exit()
+        elif tool_call.tool_name == "EnterPlanMode":
+            self._context.invalidate_system_prompt_cache()
+
         self._context.add_tool_result(tool_call.tool_name, tool_result, tool_call_id=tool_call.id)
         self._io.print_tool_result(tool_call.tool_name, tool_result, tool_call.arguments)
 
