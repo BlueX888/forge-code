@@ -9,6 +9,7 @@ from pathlib import Path
 from safety.command_policy import CommandPolicy, make_command_rule
 from main.config import AgentConfig, DangerousMode, compute_session_dir
 from cli.io import AgentIO
+from mcp.manager import McpManager
 from safety.permissions import PermissionChecker
 from tools.builtin import register_builtin_tools
 from tools.registry import ToolRegistry
@@ -138,7 +139,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         if not has_effective_model_config(working_dir):
             if not (args.model and args.api_key and args.base_url):
-                io = AgentIO()
+                io = AgentIO(working_directory=working_dir)
                 io.print_error(
                     "首次启动请使用 forge-code --model xxx --api-key xxx --base-url xxx"
                 )
@@ -180,7 +181,7 @@ def main(argv: list[str] | None = None) -> None:
     # Session setup must happen first (needed for session_id in DynamicPathConfig)
     from main.session import SessionManager, SessionData
 
-    io = AgentIO()
+    io = AgentIO(working_directory=working_dir)
 
     if args.no_session and (args.resume or args.session is not None):
         io.print_error("Cannot use --no-session when specifying --resume or --session.")
@@ -304,6 +305,7 @@ def main(argv: list[str] | None = None) -> None:
 
     registry = ToolRegistry()
     register_builtin_tools(registry)
+    mcp_manager = McpManager(config.working_directory)
 
     command_policy = CommandPolicy(
         extra_safe_commands=frozenset(config.extra_safe_commands),
@@ -350,6 +352,7 @@ def main(argv: list[str] | None = None) -> None:
         session_manager=session_manager,
         session=session,
         plan_mode_startup=args.plan,
+        mcp_manager=mcp_manager,
     )
 
     try:

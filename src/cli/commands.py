@@ -18,12 +18,15 @@ SLASH_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/ls",     "List directory",             argument="[path]"),
     SlashCommand("/pwd",    "Current directory"),
     SlashCommand("/tools",  "List available tools"),
+    SlashCommand("/mcp",    "List MCP servers and tools"),
     SlashCommand("/usage",  "Show token usage statistics"),
     SlashCommand("/memory", "List stored memories"),
     SlashCommand("/history", "Show saved conversation history", argument="[count|all]"),
     SlashCommand("/clear",  "Clear conversation context (keeps session log & memory)"),
     SlashCommand("/plan",   "Enter plan mode for complex tasks", argument="<task description>"),
+    SlashCommand("/skills", "List available skills"),
     SlashCommand("/help",   "Show this help"),
+
     SlashCommand("/quit",   "Exit"),
     SlashCommand("/exit",   "Exit",                       hidden=True),
 )

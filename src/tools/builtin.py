@@ -1,4 +1,4 @@
-"""Built-in tools: read_file, list_directory."""
+"""Built-in tools: Read, ListDir."""
 
 from __future__ import annotations
 
@@ -9,17 +9,18 @@ from typing import Any
 from main.config import AgentConfig
 from safety.permissions import SafetyLabel
 from tools.base import ToolResult
+from tools.names import ToolName
 from tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
-# read_file
+# Read
 # ---------------------------------------------------------------------------
 
 class ReadFileTool:
     @property
     def name(self) -> str:
-        return "read_file"
+        return ToolName.READ
 
     @property
     def description(self) -> str:
@@ -52,7 +53,7 @@ class ReadFileTool:
             return ToolResult(False, "", f"Path {path} is outside allowed directories")
 
         if path.is_dir():
-            return ToolResult(False, "", f"'{path}' is a directory, not a file. Use list_directory to view its contents.")
+            return ToolResult(False, "", f"'{path}' is a directory, not a file. Use ListDir to view its contents.")
 
         if not path.is_file():
             return ToolResult(False, "", f"File not found: {path}")
@@ -73,13 +74,13 @@ class ReadFileTool:
 
 
 # ---------------------------------------------------------------------------
-# list_directory
+# ListDir
 # ---------------------------------------------------------------------------
 
 class ListDirectoryTool:
     @property
     def name(self) -> str:
-        return "list_directory"
+        return ToolName.LIST_DIR
 
     @property
     def description(self) -> str:
@@ -150,6 +151,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     from tools.file_write import EditFileTool, WriteFileTool
     from tools.search import SearchTool
     from tools.shell import RunCommandTool
+    from tools.skill_tool import SkillTool
 
     registry.register(ReadFileTool())
     registry.register(ListDirectoryTool())
@@ -159,3 +161,5 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     registry.register(RunCommandTool())
     registry.register(EnterPlanModeTool())
     registry.register(ExitPlanModeTool())
+    registry.register(SkillTool())
+

@@ -10,10 +10,27 @@ from typing import Any
 from main.config import AgentConfig
 from safety.permissions import SafetyLabel
 from tools.base import ToolResult
+from tools.names import ToolName
 
 _MAX_RESULTS = 200
 _MAX_FILE_SIZE = 1_048_576  # 1 MB
 _MAX_OUTPUT_LINES = 500
+
+
+def _normalize_glob(pattern: str) -> str:
+    """Fix common LLM glob mistakes where ``**`` is not a full path component.
+
+    ``pathlib.Path.glob()`` requires ``**`` to be an entire path component
+    (surrounded by separators).  LLMs frequently produce patterns like
+    ``**.py`` or ``src**.ts`` which violate this rule.
+    """
+    # ** not preceded by / or start-of-string → insert / before **
+    pattern = re.sub(r"(?<![\\/])(?<!\A)\*\*", r"/**", pattern)
+    # ** followed by a dot (extension) → insert /* (e.g. **.py → **/*.py)
+    pattern = re.sub(r"\*\*(?=\.)", r"**/*", pattern)
+    # ** followed by a non-separator, non-dot char → insert / (e.g. **doc → **/doc)
+    pattern = re.sub(r"\*\*(?=[^\\/.*?])", r"**/", pattern)
+    return pattern
 
 
 def _is_binary(path: Path) -> bool:
@@ -30,7 +47,7 @@ class SearchTool:
 
     @property
     def name(self) -> str:
-        return "search"
+        return ToolName.SEARCH
 
     @property
     def description(self) -> str:
@@ -103,6 +120,8 @@ class SearchTool:
         self, pattern: str, base_dir: Path, config: AgentConfig,
     ) -> ToolResult:
         """Find files matching a glob pattern."""
+        pattern = _normalize_glob(pattern)
+
         def get_mtime(p: Path) -> float:
             try:
                 return p.stat().st_mtime
@@ -112,8 +131,8 @@ class SearchTool:
         try:
             matches = list(base_dir.glob(pattern))
             matches.sort(key=get_mtime, reverse=True)
-        except OSError as exc:
-            return ToolResult(False, "", str(exc))
+        except (OSError, ValueError) as exc:
+            return ToolResult(False, "", f"Invalid glob pattern '{pattern}': {exc}")
 
         matches = [p for p in matches if config.is_path_allowed(p)]
         total = len(matches)
@@ -144,14 +163,15 @@ class SearchTool:
 
         # Build file list
         if glob_pattern:
+            glob_pattern = _normalize_glob(glob_pattern)
             try:
                 files = sorted(
                     base_dir.glob(glob_pattern),
                     key=lambda p: p.stat().st_mtime,
                     reverse=True,
                 )
-            except OSError as exc:
-                return ToolResult(False, "", str(exc))
+            except (OSError, ValueError) as exc:
+                return ToolResult(False, "", f"Invalid glob pattern '{glob_pattern}': {exc}")
             files = [p for p in files if p.is_file() and config.is_path_allowed(p)]
         elif base_dir.is_file():
             files = [base_dir]

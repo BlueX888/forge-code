@@ -10,6 +10,7 @@ from typing import Any
 from main.config import AgentConfig
 from safety.permissions import SafetyLabel
 from tools.base import ToolResult
+from tools.names import ToolName
 
 _MAX_OUTPUT = 102_400  # 100 KB
 
@@ -34,7 +35,7 @@ class RunCommandTool:
 
     @property
     def name(self) -> str:
-        return "run_command"
+        return ToolName.BASH
 
     @property
     def description(self) -> str:

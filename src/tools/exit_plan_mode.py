@@ -97,7 +97,7 @@ class ExitPlanModeTool:
             f"Plan approved by user (choice: {choice}). "
             f"Exiting plan mode. Previous dangerous mode ({previous_mode}) restored.\n\n"
             f"Now begin implementation. Read the plan file, work through tasks in order:\n"
-            f"- Before starting a task: edit_file to set [in_progress]\n"
-            f"- After completing a task: edit_file to set [x] and [done]\n"
+            f"- Before starting a task: Edit to set [in_progress]\n"
+            f"- After completing a task: Edit to set [x] and [done]\n"
             f"Start with task #1.",
         )

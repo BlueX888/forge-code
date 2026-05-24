@@ -76,8 +76,8 @@ class ToolOutputTruncator:
     PREVIEW_CHARS = 2048  # ~2 KB preview kept in memory
 
     # Tools whose output is truncated from the *tail* (end).
-    # Only "run_command" is registered in builtin.py — keep single source of truth.
-    _TAIL_TOOLS = frozenset({"run_command"})
+    # Only "Bash" is registered in builtin.py — keep single source of truth.
+    _TAIL_TOOLS = frozenset({"Bash"})
 
     def __init__(
         self,

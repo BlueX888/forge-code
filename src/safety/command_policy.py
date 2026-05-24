@@ -1,4 +1,4 @@
-"""Command classification policy for run_command safety."""
+"""Command classification policy for Bash tool safety."""
 
 from __future__ import annotations
 

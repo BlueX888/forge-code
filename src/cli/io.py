@@ -8,6 +8,7 @@ import sys
 from typing import Any
 
 from tools.base import ToolResult
+from tools.names import ToolName
 
 from typing import TYPE_CHECKING
 
@@ -18,23 +19,27 @@ if TYPE_CHECKING:
 
 
 _TOOL_ICONS: dict[str, str] = {
-    "read_file": "\U0001f4d6",
-    "edit_file": "\u270f\ufe0f",
-    "write_file": "\U0001f4dd",
-    "list_directory": "\U0001f4c1",
-    "search": "\U0001f50d",
-    "run_command": "\u26a1",
+    ToolName.READ: "\U0001f4d6",
+    ToolName.EDIT: "\u270f\ufe0f",
+    ToolName.WRITE: "\U0001f4dd",
+    ToolName.LIST_DIR: "\U0001f4c1",
+    ToolName.SEARCH: "\U0001f50d",
+    ToolName.BASH: "\u26a1",
+    ToolName.SKILL: "\U0001f3af",
 }
+
 _DEFAULT_ICON = "\U0001f527"
 
 _PRIMARY_ARG_KEY: dict[str, str] = {
-    "read_file": "path",
-    "write_file": "path",
-    "edit_file": "path",
-    "list_directory": "path",
-    "search": "pattern",
-    "run_command": "command",
+    ToolName.READ: "path",
+    ToolName.WRITE: "path",
+    ToolName.EDIT: "path",
+    ToolName.LIST_DIR: "path",
+    ToolName.SEARCH: "pattern",
+    ToolName.BASH: "command",
+    ToolName.SKILL: "skill",
 }
+
 
 
 def _supports_color(stream) -> bool:
@@ -71,6 +76,7 @@ class AgentIO:
         self,
         input_stream=None,
         output_stream=None,
+        working_directory: Path | None = None,
     ) -> None:
         self._in = input_stream or sys.stdin
         self._out = output_stream or sys.stdout
@@ -83,7 +89,7 @@ class AgentIO:
                 from prompt_toolkit import PromptSession
                 from cli.completer import SlashCommandCompleter
                 self._prompt_session = PromptSession(
-                    completer=SlashCommandCompleter(),
+                    completer=SlashCommandCompleter(working_directory),
                     complete_while_typing=True,
                 )
             except (ImportError, Exception):
@@ -309,7 +315,7 @@ class AgentIO:
     # -- compact result formatters --------------------------------------------
 
     @staticmethod
-    def _fmt_read_file(result: ToolResult, arguments: dict[str, Any] | None) -> str:
+    def _fmt_Read(result: ToolResult, arguments: dict[str, Any] | None) -> str:
         output = result.output
         first_line = output.split("\n", 1)[0]
         if len(first_line) > 80:
@@ -317,7 +323,7 @@ class AgentIO:
         return f"{first_line}  ... ({len(output)} chars total)"
 
     @staticmethod
-    def _fmt_edit_file(result: ToolResult, arguments: dict[str, Any] | None) -> str:
+    def _fmt_Edit(result: ToolResult, arguments: dict[str, Any] | None) -> str:
         if not arguments:
             return result.output[:120]
         lines: list[str] = []
@@ -334,12 +340,12 @@ class AgentIO:
         return "\n  ".join(lines)
 
     @staticmethod
-    def _fmt_write_file(result: ToolResult, arguments: dict[str, Any] | None) -> str:
+    def _fmt_Write(result: ToolResult, arguments: dict[str, Any] | None) -> str:
         path = (arguments or {}).get("path", "?")
         return f"Wrote {len(result.output)} bytes to {path}"
 
     @staticmethod
-    def _fmt_list_directory(result: ToolResult, arguments: dict[str, Any] | None) -> str:
+    def _fmt_ListDir(result: ToolResult, arguments: dict[str, Any] | None) -> str:
         entries = [e for e in result.output.split("\n") if e.strip()]
         preview = "  ".join(entries[:3])
         if len(entries) > 3:
@@ -347,7 +353,7 @@ class AgentIO:
         return preview
 
     @staticmethod
-    def _fmt_search(result: ToolResult, arguments: dict[str, Any] | None) -> str:
+    def _fmt_Search(result: ToolResult, arguments: dict[str, Any] | None) -> str:
         matches = [m for m in result.output.split("\n") if m.strip()]
         preview = "  ".join(matches[:3])
         if len(matches) > 3:
@@ -355,7 +361,7 @@ class AgentIO:
         return preview
 
     @staticmethod
-    def _fmt_run_command(result: ToolResult, arguments: dict[str, Any] | None) -> str:
+    def _fmt_Bash(result: ToolResult, arguments: dict[str, Any] | None) -> str:
         output = result.output
         first_line = output.split("\n", 1)[0]
         if len(first_line) > 80:

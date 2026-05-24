@@ -10,6 +10,21 @@ from tools.base import Tool
 class ToolRegistry:
     """Simple dict-backed tool registry."""
 
+    # Aliases handle model-training mismatches (e.g. Claude often calls
+    # "Grep"/"Glob" when the actual tool is named "Search").
+    _ALIASES: dict[str, str] = {
+        "Grep": "Search",
+        "Glob": "Search",
+        "grep": "Search",
+        "glob": "Search",
+        "search": "Search",
+        "read_file": "Read",
+        "write_file": "Write",
+        "edit_file": "Edit",
+        "list_directory": "ListDir",
+        "run_command": "Bash",
+    }
+
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
 
@@ -19,7 +34,12 @@ class ToolRegistry:
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> Tool | None:
-        return self._tools.get(name)
+        tool = self._tools.get(name)
+        if tool is None:
+            canonical = self._ALIASES.get(name)
+            if canonical:
+                tool = self._tools.get(canonical)
+        return tool
 
     def list_tools(self) -> list[dict[str, Any]]:
         """Return tool descriptions suitable for context building."""

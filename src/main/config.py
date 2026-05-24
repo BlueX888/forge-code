@@ -278,13 +278,16 @@ class AgentConfig:
     api_key: str | None = None
     base_url: str | None = None
     max_history_messages: int = 100
-    max_tool_iterations: int = 100
+    max_tool_iterations: int = 100  # deprecated alias for max_turns
+    max_turns: int = 100
     max_output_tokens: int = 4096
     command_timeout: int = 120
     permitted_directories: tuple[Path, ...] = ()
     parallel_tool_execution: bool = True
     extra_safe_commands: tuple[str, ...] = ()
     max_context_tokens: int = 258_000
+    edit_nudge_ratio: float = 0.7
+    wrapup_ratio: float = 0.85
     enable_context_management: bool = True
     context_idle_timeout: int = 300
     context_spill_dir: Path | None = None
@@ -369,7 +372,8 @@ class AgentConfig:
                 agent_section.get("allow_dangerous"),
             ),
             max_history_messages=agent_section.get("max_history_messages", 100),
-            max_tool_iterations=agent_section.get("max_tool_iterations", 100),
+            max_tool_iterations=agent_section.get("max_tool_iterations", agent_section.get("max_turns", 100)),
+            max_turns=agent_section.get("max_turns", agent_section.get("max_tool_iterations", 100)),
             max_output_tokens=agent_section.get("max_output_tokens", 4096),
             command_timeout=agent_section.get("command_timeout", 120),
             permitted_directories=permitted_dirs,

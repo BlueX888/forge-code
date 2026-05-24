@@ -29,10 +29,12 @@ class StreamChunk:
 from main.config import AgentConfig, DangerousMode
 from main.context import ContextBuilder, Message
 from main.context_manager import ContextWindowManager
+from mcp.manager import McpManager
 # Tool call grouping (was executor.py — merged inline)
 import dataclasses
 
 from tools.base import ToolCall
+from tools.names import ToolName
 
 @dataclasses.dataclass(frozen=True)
 class ToolCallGroup:
@@ -117,7 +119,7 @@ class PlaceholderModelClient:
             path = text[6:].strip()
             return ModelResponse(
                 text="",
-                tool_calls=[ToolCall("read_file", {"path": path}, id=str(uuid.uuid4()))],
+                tool_calls=[ToolCall(ToolName.READ, {"path": path}, id=str(uuid.uuid4()))],
                 stop_reason="tool_use",
             )
 
@@ -126,14 +128,14 @@ class PlaceholderModelClient:
             args: dict[str, Any] = {"path": parts[1]} if len(parts) > 1 else {}
             return ModelResponse(
                 text="",
-                tool_calls=[ToolCall("list_directory", args, id=str(uuid.uuid4()))],
+                tool_calls=[ToolCall(ToolName.LIST_DIR, args, id=str(uuid.uuid4()))],
                 stop_reason="tool_use",
             )
 
         if text == "/pwd":
             return ModelResponse(
                 text="",
-                tool_calls=[ToolCall("list_directory", {}, id=str(uuid.uuid4()))],
+                tool_calls=[ToolCall(ToolName.LIST_DIR, {}, id=str(uuid.uuid4()))],
                 stop_reason="tool_use",
             )
 
@@ -727,6 +729,7 @@ class AgentRuntime:
         session_manager: SessionManager | None = None,
         session: SessionData | None = None,
         plan_mode_startup: bool = False,
+        mcp_manager: McpManager | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -735,6 +738,9 @@ class AgentRuntime:
         self._model = model_client
         self._session_manager = session_manager
         self._session = session
+        self._mcp_manager = mcp_manager
+        self._mcp_initialized = False
+        self._mcp_tools: list[dict[str, Any]] = []
 
         # Context window management
         window_manager: ContextWindowManager | None = None
@@ -807,6 +813,12 @@ class AgentRuntime:
                 "turn_count": session.metadata.turn_count,
                 "last_context_used": session.metadata.last_context_used,
             })
+
+        # Wire fork handler for SkillTool if registered
+        skill_tool = self._registry.get(ToolName.SKILL)
+        if skill_tool is not None and hasattr(skill_tool, "set_fork_handler"):
+            skill_tool.set_fork_handler(self._run_skill_fork)
+
 
     # -- plan mode -------------------------------------------------------
 
@@ -953,11 +965,22 @@ class AgentRuntime:
             if user_input == "/history" or user_input.startswith("/history "):
                 self._print_history(user_input.removeprefix("/history").strip())
                 continue
+            if user_input == "/skills":
+                self._print_skills()
+                continue
+            if user_input == "/mcp":
+                self._print_mcp()
+                continue
+            if user_input.startswith("/") and not user_input.startswith("/plan ") and not user_input.startswith("/history "):
+                if self._try_skill_command(user_input):
+                    continue
 
             self._run_agent_turn(user_input)
+
             self._auto_save()
 
         self._auto_save()
+        self._close_mcp()
         self._io.print_system("Goodbye.")
 
     def run_once(self, user_input: str) -> None:
@@ -986,6 +1009,9 @@ class AgentRuntime:
 
         self._context.add_user_message(user_input)
         tools = self._registry.list_tools()
+        self._ensure_mcp_initialized()
+        if self._mcp_tools:
+            tools = tools + self._mcp_tools
 
         self._token_tracker.begin_turn()
 
@@ -995,8 +1021,19 @@ class AgentRuntime:
         self._esc_monitor = esc_monitor
         esc_monitor.start()
 
+        _EDIT_TOOLS = {ToolName.EDIT, ToolName.WRITE}
+        has_edited = False
+        nudge_threshold = int(
+            self._config.max_turns * self._config.edit_nudge_ratio
+        )
+        nudge_sent = False
+        wrapup_threshold = int(
+            self._config.max_turns * self._config.wrapup_ratio
+        )
+        wrapup_sent = False
+
         try:
-            for _iteration in range(self._config.max_tool_iterations):
+            for _iteration in range(self._config.max_turns):
                 cancel_token.check()
 
                 messages = self._context.build()
@@ -1073,11 +1110,75 @@ class AgentRuntime:
                 # Execute each tool call
                 self._execute_tool_calls(tool_calls, cancel_token=cancel_token)
 
+                # Track whether the agent has performed any edits
+                if not has_edited:
+                    for tc in tool_calls:
+                        if tc.tool_name in _EDIT_TOOLS:
+                            has_edited = True
+                            break
+
+                # Nudge: if the agent has used many iterations without editing,
+                # inject a hint encouraging it to attempt a fix.
+                if (
+                    not nudge_sent
+                    and not has_edited
+                    and _iteration >= nudge_threshold
+                ):
+                    nudge_sent = True
+                    nudge_msg = (
+                        "[System] You have spent many iterations reading and "
+                        "searching without making any edits. If you have "
+                        "identified the issue, please proceed to fix it using "
+                        "Edit or Write. If you cannot determine the "
+                        "fix, provide your analysis and stop."
+                    )
+                    self._context.add_user_message(nudge_msg)
+
+                # Wrap-up nudge: approaching the turn limit.
+                remaining = self._config.max_turns - _iteration - 1
+                if (
+                    not wrapup_sent
+                    and _iteration >= wrapup_threshold
+                ):
+                    wrapup_sent = True
+                    wrapup_msg = (
+                        f"[System] You are approaching the turn limit "
+                        f"({remaining} turns remaining out of {self._config.max_turns}). "
+                        "Please wrap up: summarize what you have accomplished, note any "
+                        "remaining work, and complete the most critical pending changes."
+                    )
+                    self._context.add_user_message(wrapup_msg)
+
                 # Loop back: the model will see tool results and continue reasoning
             else:
+                # Max turns reached — one final summary call without tools
+                self._context.add_user_message(
+                    "[System] Turn limit reached. Provide a brief summary of what was "
+                    "accomplished and what remains to be done. Do NOT call any tools."
+                )
+                messages = self._context.build()
+                try:
+                    stream_method = getattr(self._model, "complete_stream", None)
+                    if stream_method is not None:
+                        try:
+                            response = self._consume_stream(stream_method(messages, []), cancel_token=cancel_token)
+                        except Exception:
+                            response = self._model.complete(messages, [], max_tokens=self._config.max_output_tokens)
+                    else:
+                        response = self._model.complete(messages, [], max_tokens=self._config.max_output_tokens)
+                    self._token_tracker.record(response)
+                    if response.text:
+                        self._context.add_assistant_message(
+                            response.text,
+                            reasoning_content=response.reasoning_content,
+                            thinking_blocks=response.thinking_blocks,
+                        )
+                        if stream_method is None:
+                            self._io.print_assistant(response.text)
+                except Exception:
+                    pass  # Summary call is best-effort
                 self._io.print_system(
-                    f"Reached maximum tool iterations ({self._config.max_tool_iterations}). "
-                    "Stopping agent loop."
+                    f"Reached maximum turns ({self._config.max_turns})."
                 )
         except AgentCancelled as exc:
             content = exc.partial_text
@@ -1134,6 +1235,10 @@ class AgentRuntime:
 
     def _execute_tool(self, tool_call: ToolCall) -> None:
         """Look up, permission-check, and run a single tool call."""
+        if self._mcp_manager is not None and self._mcp_manager.is_mcp_tool(tool_call.tool_name):
+            self._execute_mcp_tool(tool_call)
+            return
+
         tool = self._registry.get(tool_call.tool_name)
         if tool is None:
             msg = f"Unknown tool: {tool_call.tool_name}"
@@ -1217,15 +1322,75 @@ class AgentRuntime:
                 )
                 return
 
-        tool_result = tool.run(arguments=tool_call.arguments, config=self._config)
+        try:
+            tool_result = tool.run(arguments=tool_call.arguments, config=self._config)
+        except Exception as exc:
+            tool_result = ToolResult(False, "", f"Tool error: {exc}")
 
         # Detect plan mode state changes after tool execution
-        if tool_call.tool_name == "ExitPlanMode":
+        if tool_call.tool_name == ToolName.EXIT_PLAN_MODE:
             self._handle_plan_exit()
-        elif tool_call.tool_name == "EnterPlanMode":
+        elif tool_call.tool_name == ToolName.ENTER_PLAN_MODE:
             self._context.invalidate_system_prompt_cache()
 
         self._context.add_tool_result(tool_call.tool_name, tool_result, tool_call_id=tool_call.id)
+        self._io.print_tool_result(tool_call.tool_name, tool_result, tool_call.arguments)
+
+    def _execute_mcp_tool(self, tool_call: ToolCall) -> None:
+        """Permission-check and execute an MCP tool call."""
+        self._ensure_mcp_initialized()
+        if self._mcp_manager is None:
+            msg = "MCP is not configured"
+            self._io.print_error(msg)
+            self._context.add_tool_result(
+                tool_call.tool_name,
+                ToolResult(False, "", msg),
+                tool_call_id=tool_call.id,
+            )
+            return
+
+        req = PermissionRequest(safety_label=SafetyLabel.DESTRUCTIVE)
+        result = self._permissions.check(req)
+        if not result.allowed:
+            self._io.print_error(f"Permission denied: {result.reason}")
+            self._context.add_tool_result(
+                tool_call.tool_name,
+                ToolResult(False, "", f"Permission denied: {result.reason}"),
+                tool_call_id=tool_call.id,
+            )
+            return
+
+        needs_confirm = (
+            result.requires_confirmation
+            or self._config.allow_dangerous_operations == DangerousMode.ASK
+        )
+        if needs_confirm:
+            esc_monitor = getattr(self, "_esc_monitor", None)
+            if esc_monitor is not None:
+                with esc_monitor.paused():
+                    confirmed = self._confirm_dangerous_operation(tool_call)
+            else:
+                confirmed = self._confirm_dangerous_operation(tool_call)
+            if not confirmed:
+                self._io.print_error("Operation cancelled by user.")
+                self._context.add_tool_result(
+                    tool_call.tool_name,
+                    ToolResult(False, "", "Operation cancelled by user"),
+                    tool_call_id=tool_call.id,
+                )
+                return
+
+        try:
+            result_text = self._mcp_manager.call_tool(tool_call.tool_name, tool_call.arguments)
+            tool_result = ToolResult(True, result_text)
+        except Exception as exc:
+            tool_result = ToolResult(False, "", str(exc))
+
+        self._context.add_tool_result(
+            tool_call.tool_name,
+            tool_result,
+            tool_call_id=tool_call.id,
+        )
         self._io.print_tool_result(tool_call.tool_name, tool_result, tool_call.arguments)
 
     # -- parallel execution -------------------------------------------------
@@ -1437,6 +1602,22 @@ class AgentRuntime:
 
     # -- helpers ------------------------------------------------------------
 
+    def _ensure_mcp_initialized(self) -> None:
+        """Connect configured MCP servers once and cache their tool definitions."""
+        if self._mcp_manager is None or self._mcp_initialized:
+            return
+        self._mcp_initialized = True
+        try:
+            self._mcp_manager.load_and_connect()
+            self._mcp_tools = self._mcp_manager.get_tool_definitions()
+        except Exception as exc:
+            print(f"[mcp] Init failed: {exc}", file=sys.stderr)
+            self._mcp_tools = []
+
+    def _close_mcp(self) -> None:
+        if self._mcp_manager is not None:
+            self._mcp_manager.close_all()
+
     def _print_token_summary(self) -> None:
         """Display a one-line token usage summary after each API call."""
         t = self._token_tracker
@@ -1462,6 +1643,20 @@ class AgentRuntime:
             except OSError as exc:
                 self._io.print_error(f"Failed to save session: {exc}")
 
+    def _format_skills_section(self) -> str:
+        """Build a compact skills section for command listings."""
+        from skills.skills import discover_skills
+        skills = discover_skills(self._config.working_directory)
+        if not skills:
+            return ""
+        lines = ["\n\nSkills:"]
+        for name, skill in sorted(skills.items()):
+            if not skill.user_invocable:
+                continue
+            mode = f"[{skill.context}]"
+            lines.append(f"  /{skill.name:<15} {mode:<8} — {skill.description or '(no description)'}")
+        return "\n".join(lines) if len(lines) > 1 else ""
+
     def _print_help(self) -> None:
         from cli.commands import format_help_text
         session_help = ""
@@ -1474,19 +1669,43 @@ class AgentRuntime:
                 "  Use --session <id> to resume a session\n"
                 "  Use --resume to resume the latest session"
             )
-        self._io.print_system(format_help_text(session_help))
+        self._io.print_system(format_help_text(session_help) + self._format_skills_section())
 
     def _print_commands_list(self) -> None:
         from cli.commands import format_command_list
-        self._io.print_system(format_command_list())
+        self._io.print_system(format_command_list() + self._format_skills_section())
 
     def _print_tools(self) -> None:
         tools = self._registry.list_tools()
+        self._ensure_mcp_initialized()
+        if self._mcp_tools:
+            tools = tools + self._mcp_tools
         if not tools:
             self._io.print_system("No tools registered.")
             return
         lines = [f"  {t['name']} — {t['description']}" for t in tools]
         self._io.print_system("Available tools:\n" + "\n".join(lines))
+
+    def _print_mcp(self) -> None:
+        self._ensure_mcp_initialized()
+        if self._mcp_manager is None:
+            self._io.print_system("No MCP servers configured.")
+            return
+
+        summaries = self._mcp_manager.server_summaries()
+        if not summaries:
+            if self._mcp_manager.configured_count() == 0:
+                self._io.print_system("No MCP servers configured.")
+            else:
+                self._io.print_system("No MCP servers connected.")
+            return
+
+        lines = ["MCP servers:"]
+        for summary in summaries:
+            count = summary["tool_count"]
+            suffix = "tool" if count == 1 else "tools"
+            lines.append(f"  {summary['name']} - {count} {suffix}")
+        self._io.print_system("\n".join(lines))
 
     def _print_history(self, raw_limit: str = "") -> None:
         if self._session is None:
@@ -1541,3 +1760,196 @@ class AgentRuntime:
             return content
         omitted = len(content) - max_chars
         return f"{content[:max_chars].rstrip()}\n[truncated {omitted:,} chars]"
+
+    def _print_skills(self) -> None:
+        """List all available skills (from ~/.forgecode/skills and project-level)."""
+        from skills.skills import discover_skills
+        skills = discover_skills(self._config.working_directory)
+        if not skills:
+            self._io.print_system("No skills found. Put skill files under .forgecode/skills/ or ~/.forgecode/skills/.")
+            return
+
+        self._io.print_system(f"Found {len(skills)} skills:\n")
+        for name, skill in sorted(skills.items()):
+            mode = f"[{skill.context}]"
+            self._io.print_system(f"  /{skill.name:<15} {mode:<8} — {skill.description or '(no description)'}")
+
+    def _try_skill_command(self, user_input: str) -> bool:
+        """Try to dispatch user_input as a skill slash command."""
+        from skills.skills import discover_skills, resolve_prompt
+        parts = user_input.split(maxsplit=1)
+        cmd = parts[0].removeprefix("/")
+        arguments = parts[1].strip() if len(parts) > 1 else ""
+
+        skills = discover_skills(self._config.working_directory)
+        if cmd in skills:
+            skill = skills[cmd]
+            if not skill.user_invocable:
+                self._io.print_error(f"Skill '{cmd}' is not user-invocable.")
+                return True
+
+            if skill.context == "fork":
+                # Execute in fork mode
+                self._run_skill_fork(cmd, arguments)
+            else:
+                # Execute in inline mode
+                resolved = resolve_prompt(skill, arguments)
+                self._run_agent_turn(resolved)
+            return True
+        return False
+
+    def _execute_fork_tool_call(self, tool_call: ToolCall, allowed_tools: list[str]) -> ToolResult:
+        """Look up, permission-check, and run a tool call inside a fork sub-agent loop."""
+        if tool_call.tool_name not in allowed_tools:
+            return ToolResult(False, "", f"Tool '{tool_call.tool_name}' is not allowed in this skill.")
+
+        tool = self._registry.get(tool_call.tool_name)
+        if tool is None:
+            return ToolResult(False, "", f"Unknown tool: {tool_call.tool_name}")
+
+        # Path approval (sandbox check + user confirmation if needed)
+        if not self._check_and_approve_path(tool_call):
+            return ToolResult(False, "", "Permission denied: Path access denied by user")
+
+        # Extract path for PermissionRequest
+        path = None
+        path_val = tool_call.arguments.get("path")
+        if path_val:
+            path = Path(path_val)
+            if not path.is_absolute():
+                path = self._config.working_directory / path
+
+        command = tool_call.arguments.get("command")
+        req = PermissionRequest(safety_label=tool.safety_label, path=path, command=command)
+        result = self._permissions.check(req)
+        if not result.allowed:
+            return ToolResult(False, "", f"Permission denied: {result.reason}")
+
+        # Confirmation check if needed
+        plan_file: Path | None = getattr(self._config, "plan_file", None)
+        is_plan_file_write = (
+            plan_file is not None
+            and path is not None
+            and path.resolve() == plan_file.resolve()
+        )
+        needs_confirm = (
+            result.requires_confirmation
+            or (tool.safety_label == SafetyLabel.DESTRUCTIVE
+                and self._config.allow_dangerous_operations == DangerousMode.ASK
+                and not is_plan_file_write)
+        )
+        if needs_confirm:
+            esc_monitor = getattr(self, "_esc_monitor", None)
+            if esc_monitor is not None:
+                with esc_monitor.paused():
+                    confirmed = self._confirm_dangerous_operation(tool_call)
+            else:
+                confirmed = self._confirm_dangerous_operation(tool_call)
+
+            if not confirmed:
+                return ToolResult(False, "", "Operation cancelled by user")
+
+        # Validate required parameters
+        required_params = (tool.parameters_schema or {}).get("required", [])
+        for param in required_params:
+            if not tool_call.arguments.get(param):
+                return ToolResult(False, "", f"Missing required parameter: '{param}' for tool '{tool_call.tool_name}'")
+
+        try:
+            return tool.run(arguments=tool_call.arguments, config=self._config)
+        except Exception as exc:
+            return ToolResult(False, "", f"Tool error: {exc}")
+
+    def _run_skill_fork(self, skill_name: str, arguments: str) -> ToolResult:
+        """Run a skill in fork mode (sub-agent loop)."""
+        from skills.skills import discover_skills, resolve_prompt
+        skills = discover_skills(self._config.working_directory)
+        if skill_name not in skills:
+            return ToolResult(False, "", f"Skill '{skill_name}' not found.")
+
+        skill = skills[skill_name]
+        resolved_prompt = resolve_prompt(skill, arguments)
+
+        # Restricted tool set
+        all_tools_schema = self._registry.list_tools()
+        allowed_tools_schema = [t for t in all_tools_schema if t["name"] in skill.allowed_tools]
+        allowed_tool_names = [t["name"] for t in allowed_tools_schema]
+
+        self._io.print_system(f"\n[Fork] Starting skill '{skill_name}' in fork mode...")
+        self._io.print_system(f"[Fork] Allowed tools: {', '.join(allowed_tool_names)}")
+
+        messages = [
+            Message(role="system", content=resolved_prompt),
+            Message(role="user", content="Start"),
+        ]
+
+        max_fork_turns = 20
+        last_text = ""
+
+        for turn in range(max_fork_turns):
+            try:
+                response = self._model.complete(messages, allowed_tools_schema)
+            except Exception as exc:
+                msg = f"Fork API Error: {exc}"
+                self._io.print_error(msg)
+                return ToolResult(False, "", msg)
+
+            tool_calls = response.tool_calls
+            if not tool_calls and response.text:
+                parsed = parse_tool_call(response.text)
+                if parsed:
+                    tool_calls = [parsed]
+
+            # Append assistant message once (with or without tool_calls)
+            messages.append(Message(
+                role="assistant",
+                content=response.text or "",
+                tool_calls=tool_calls if tool_calls else None,
+            ))
+
+            if response.text:
+                last_text = response.text
+
+            if not tool_calls:
+                # Model produced text without tool calls — might be final or mid-thought.
+                # Print and continue to synthesis below.
+                if response.text:
+                    self._io.print_assistant(f"[Fork] {response.text}")
+                break
+
+            if response.text:
+                self._io.print_assistant(f"[Fork] {response.text}")
+
+            for tc in tool_calls:
+                self._io.print_tool_call(f"[Fork] {tc.tool_name}", tc.arguments)
+                tool_res = self._execute_fork_tool_call(tc, skill.allowed_tools)
+                self._io.print_tool_result(f"[Fork] {tc.tool_name}", tool_res, tc.arguments)
+                messages.append(Message(
+                    role="tool",
+                    content=tool_res.output if tool_res.success else f"Error: {tool_res.error}",
+                    tool_name=tc.tool_name,
+                    tool_call_id=tc.id
+                ))
+
+        # --- Final synthesis turn ---
+        # If the loop ended mid-exploration (max turns or model stopped
+        # without producing a full report), ask for a final summary.
+        messages.append(Message(
+            role="user",
+            content=(
+                "You have finished your exploration. Now produce your final "
+                "structured report based on everything you have learned. "
+                "Do NOT make any more tool calls — just output the report."
+            ),
+        ))
+        try:
+            final = self._model.complete(messages, [])  # no tools available
+            if final.text:
+                self._io.print_assistant(f"[Fork] {final.text}")
+                last_text = final.text
+        except Exception as exc:
+            self._io.print_error(f"Fork synthesis error: {exc}")
+
+        self._io.print_system(f"[Fork] Skill '{skill_name}' finished.")
+        return ToolResult(True, last_text)
+

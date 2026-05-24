@@ -8,6 +8,7 @@ from typing import Any
 from main.config import AgentConfig
 from safety.permissions import SafetyLabel
 from tools.base import ToolResult
+from tools.names import ToolName
 
 
 def _maybe_update_memory_index(target: Path, config: AgentConfig) -> None:
@@ -29,7 +30,7 @@ class WriteFileTool:
 
     @property
     def name(self) -> str:
-        return "write_file"
+        return ToolName.WRITE
 
     @property
     def description(self) -> str:
@@ -96,7 +97,7 @@ class EditFileTool:
 
     @property
     def name(self) -> str:
-        return "edit_file"
+        return ToolName.EDIT
 
     @property
     def description(self) -> str:

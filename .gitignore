@@ -78,5 +78,16 @@ CONTRIBUTING.md
 # Claude dev environment config/cache
 .claude/
 
+# ForgeCode runtime dynamic data and evaluations
+.forgecode/
+session/
+eval/
+eval_cache/
+eval_output/
+eval_workspace/
+logs/
+*.json
+
+
 
 

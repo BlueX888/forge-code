@@ -99,6 +99,6 @@ class EnterPlanModeTool:
             f"Plan file: {state.plan_file}\n"
             f"Previous dangerous mode ({state.previous_dangerous_mode}) saved — will be restored on exit.\n\n"
             f"You are now in a read-only phase. Explore the codebase, design your approach, "
-            f"then write your plan to the plan file using write_file. "
+            f"then write your plan to the plan file using Write. "
             f"Call ExitPlanMode when ready for user review.",
         )

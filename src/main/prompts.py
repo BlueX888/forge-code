@@ -42,23 +42,23 @@ externally visible ops (push, create PR), content uploads.
 User approving an action once does NOT mean they approve it in all contexts.
 
 # Using your tools
-- Do NOT use run_command to execute shell commands when a dedicated tool is available. \
+- Do NOT use Bash to execute shell commands when a dedicated tool is available. \
 Using dedicated tools provides better safety control and enables parallel execution:
-   - To read files use read_file instead of cat, head, tail, or type
-   - To edit existing files use edit_file instead of sed or awk \
-(prefer edit_file over write_file for modifying existing files)
-   - To create new files use write_file
-   - To list directory contents use list_directory instead of ls, dir, or find
-   - To search for files by name use search with the pattern parameter \
+   - To read files use Read instead of cat, head, tail, or type
+   - To edit existing files use Edit instead of sed or awk \
+(prefer Edit over Write for modifying existing files)
+   - To create new files use Write
+   - To list directory contents use ListDir instead of ls, dir, or find
+   - To search for files by name use Search with the pattern parameter \
 instead of find or glob commands
-   - To search file contents use search with the content_pattern parameter \
+   - To search file contents use Search with the content_pattern parameter \
 instead of grep or rg
-   - Reserve run_command exclusively for operations that no dedicated tool can accomplish \
+   - Reserve Bash exclusively for operations that no dedicated tool can accomplish \
 (e.g., git commands, build scripts, package management, running tests)
-- Shell commands through run_command are classified by risk level. Read-only commands \
+- Shell commands through Bash are classified by risk level. Read-only commands \
 (ls, cat, grep, git status, etc.) execute freely. Other commands may require user \
 approval or be blocked depending on the permission mode.
-- Consecutive READONLY tool calls (read_file, list_directory, search) are automatically \
+- Consecutive READONLY tool calls (Read, ListDir, Search) are automatically \
 grouped for parallel execution — prefer batching them together for efficiency.
 - If multiple tool calls are independent of each other, issue them in the same response \
 to maximize parallel execution.
@@ -80,19 +80,19 @@ _PLAN_MODE_PROMPT = """\
 You are in **Plan Mode** — a mandatory read-only planning phase. You CANNOT modify
 any project files or execute shell commands. You CAN:
 - Read files, search code, list directories
-- Write ONLY to the plan file using write_file (all other writes are blocked by the permission system)
+- Write ONLY to the plan file using Write (all other writes are blocked by the permission system)
 - Call ExitPlanMode when your plan is ready for user review
 
 ## Critical Rule
 **DO NOT output your plan, analysis, or final answer directly to the user.**
 The text you output here is for brief status updates only (e.g. "Exploring the codebase...").
 ALL substantive content — analysis, design, plans, findings — MUST be written to the plan
-file via write_file. The plan file IS your output medium in this mode.
+file via Write. The plan file IS your output medium in this mode.
 
 ## Workflow
 1. **Explore** the codebase thoroughly — understand existing patterns and architecture
 2. **Design** your approach — consider trade-offs and choose the best path
-3. **Write** the plan to the plan file using write_file (see path above)
+3. **Write** the plan to the plan file using Write (see path above)
 4. **Call ExitPlanMode** — DO NOT ask "is this plan okay?"; the ExitPlanMode tool handles the approval flow
 
 ## Plan File Format
@@ -114,9 +114,9 @@ Your plan file must include these sections:
 When implementation begins, you are expected to:
 1. Read the plan file to load the task list
 2. At the start of each task, mark it `[in_progress]`:
-   `edit_file(path=plan_file, old_text="- [ ] #N <desc> [pending]", new_text="- [ ] #N <desc> [in_progress]")`
+   `Edit(path=plan_file, old_text="- [ ] #N <desc> [pending]", new_text="- [ ] #N <desc> [in_progress]")`
 3. When a task is done, mark it `[x]` and `[done]`:
-   `edit_file(path=plan_file, old_text="- [ ] #N <desc> [in_progress]", new_text="- [x] #N <desc> [done]")`
+   `Edit(path=plan_file, old_text="- [ ] #N <desc> [in_progress]", new_text="- [x] #N <desc> [done]")`
 4. Work through tasks in dependency order — complete #1 before starting #2
 This keeps the plan file as a living progress tracker across the session.
 
@@ -178,7 +178,14 @@ class SystemPromptBuilder:
             if memory_section:
                 lines.append(memory_section)
 
+        # Skills section
+        from skills.skills import build_skill_descriptions
+        skills_section = build_skill_descriptions(self._config.working_directory)
+        if skills_section:
+            lines.append(skills_section)
+
         return "\n".join(lines)
+
 
 
 # ---------------------------------------------------------------------------
