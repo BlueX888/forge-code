@@ -11,6 +11,7 @@ from typing import Any
 
 from main.config import global_config_path, project_config_path
 from mcp.connection import DEFAULT_TIMEOUT, McpConnection
+from mcp.presets import resolve_preset
 
 
 @dataclasses.dataclass(frozen=True)
@@ -115,6 +116,7 @@ class McpManager:
 
     def _load_configs(self) -> dict[str, McpServerConfig]:
         merged: dict[str, dict[str, Any]] = {}
+        self._merge_servers(merged, self._load_preset_servers())
         self._merge_servers(merged, self._load_toml_servers(global_config_path()))
         self._merge_servers(merged, self._load_toml_servers(project_config_path(self._working_directory)))
         self._merge_servers(merged, self._load_json_servers(self._working_directory / ".mcp.json"))
@@ -167,6 +169,72 @@ class McpManager:
         if not isinstance(servers, dict):
             return {}
         return {str(name): raw for name, raw in servers.items() if isinstance(raw, dict)}
+
+    def _load_preset_servers(self) -> dict[str, dict[str, Any]]:
+        preset_configs: dict[str, Any] = {}
+
+        def merge_preset_val(name: str, val: Any) -> None:
+            if name not in preset_configs:
+                preset_configs[name] = val
+                return
+            current = preset_configs[name]
+            if isinstance(current, dict) and isinstance(val, dict):
+                merged_dict = dict(current)
+                for k, v in val.items():
+                    if k == "env" and isinstance(v, dict):
+                        env = dict(merged_dict.get("env", {})) if isinstance(merged_dict.get("env"), dict) else {}
+                        env.update(v)
+                        merged_dict["env"] = env
+                    else:
+                        merged_dict[k] = v
+                preset_configs[name] = merged_dict
+            elif isinstance(val, dict):
+                merged_dict = {"enabled": True}
+                merged_dict.update(val)
+                preset_configs[name] = merged_dict
+            else:
+                preset_configs[name] = val
+
+        for name, val in self._load_toml_presets(global_config_path()).items():
+            merge_preset_val(name, val)
+        for name, val in self._load_toml_presets(project_config_path(self._working_directory)).items():
+            merge_preset_val(name, val)
+        for name, val in self._load_json_presets(self._working_directory / ".mcp.json").items():
+            merge_preset_val(name, val)
+
+        resolved: dict[str, dict[str, Any]] = {}
+        for name, user_config in preset_configs.items():
+            config_dict = resolve_preset(name, user_config)
+            if config_dict is not None:
+                resolved[name] = config_dict
+        return resolved
+
+    @staticmethod
+    def _load_toml_presets(path: Path) -> dict[str, Any]:
+        data = _load_toml(path)
+        mcp = data.get("mcp", {})
+        if not isinstance(mcp, dict):
+            return {}
+        presets = mcp.get("presets", {})
+        if not isinstance(presets, dict):
+            return {}
+        return {str(name): val for name, val in presets.items()}
+
+    @staticmethod
+    def _load_json_presets(path: Path) -> dict[str, Any]:
+        if not path.is_file():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            print(f"[mcp] Warning: skipping invalid config {path}: {exc}", file=sys.stderr)
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        presets = data.get("mcpPresets", {})
+        if not isinstance(presets, dict):
+            return {}
+        return {str(name): val for name, val in presets.items()}
 
     @staticmethod
     def _coerce_server_config(name: str, raw: dict[str, Any]) -> McpServerConfig | None:

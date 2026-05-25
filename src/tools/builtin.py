@@ -152,6 +152,8 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     from tools.search import SearchTool
     from tools.shell import RunCommandTool
     from tools.skill_tool import SkillTool
+    from tools.web_search import WebSearchTool
+    from tools.web_fetch import WebFetchTool
 
     registry.register(ReadFileTool())
     registry.register(ListDirectoryTool())
@@ -162,4 +164,6 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     registry.register(EnterPlanModeTool())
     registry.register(ExitPlanModeTool())
     registry.register(SkillTool())
+    registry.register(WebSearchTool())
+    registry.register(WebFetchTool())
 

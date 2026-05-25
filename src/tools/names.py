@@ -11,4 +11,6 @@ class ToolName:
     ENTER_PLAN_MODE = "EnterPlanMode"
     EXIT_PLAN_MODE = "ExitPlanMode"
     SKILL = "Skill"
+    WEB_SEARCH = "WebSearch"
+    WEB_FETCH = "WebFetch"
 

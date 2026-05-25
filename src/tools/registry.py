@@ -23,6 +23,8 @@ class ToolRegistry:
         "edit_file": "Edit",
         "list_directory": "ListDir",
         "run_command": "Bash",
+        "web_search": "WebSearch",
+        "web_fetch": "WebFetch",
     }
 
     def __init__(self) -> None:

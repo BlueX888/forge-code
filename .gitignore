@@ -87,6 +87,8 @@ eval_output/
 eval_workspace/
 logs/
 *.json
+docs/
+
 
 
 
